@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,20 +23,20 @@ import (
 
 type OAuth2Handler struct {
 	cfg                 *authTypes.Config
-	sessionStorage      *sessions.SessionStorage // Instance-based session storage
+	sessionStorage      *sessions.SessionStorage  // Instance-based session storage
 	callbackStates      map[string]*callbackState // Temporary state for OAuth callback flow
 	callbackStatesMutex sync.RWMutex              // Protects callbackStates map
 	registeredProviders map[string]*oauth2.Config
 	shutdownChan        chan struct{} // Channel to signal shutdown
-	shutdownOnce        sync.Once    // Ensures shutdown is called only once
-	
+	shutdownOnce        sync.Once     // Ensures shutdown is called only once
+
 	// Cached HTTP clients per provider (keyed by provider name)
-	httpClients      map[string]*http.Client
-	httpClientsMu    sync.RWMutex // Protects httpClients map
-	
+	httpClients   map[string]*http.Client
+	httpClientsMu sync.RWMutex // Protects httpClients map
+
 	// Cached cert bundles per provider (keyed by cert bundle path)
 	certBundles      map[string]*x509.CertPool
-	certBundlesMu    sync.RWMutex // Protects certBundles map
+	certBundlesMu    sync.RWMutex         // Protects certBundles map
 	certBundleMtimes map[string]time.Time // Track file modification times for cache invalidation
 }
 
@@ -93,7 +94,7 @@ func (h *OAuth2Handler) Shutdown() {
 		h.callbackStatesMutex.Lock()
 		defer h.callbackStatesMutex.Unlock()
 		h.callbackStates = make(map[string]*callbackState)
-		
+
 		// Close HTTP client transports to release connections
 		h.httpClientsMu.Lock()
 		for _, client := range h.httpClients {
@@ -103,7 +104,7 @@ func (h *OAuth2Handler) Shutdown() {
 		}
 		h.httpClients = make(map[string]*http.Client)
 		h.httpClientsMu.Unlock()
-		
+
 		log.Debug("OAuth2 handler shutdown complete")
 	})
 }
@@ -454,7 +455,7 @@ func (h *OAuth2Handler) getOrCreateHttpClient(providerName string, providerConfi
 	// Double-check pattern: acquire write lock and check again
 	h.httpClientsMu.Lock()
 	defer h.httpClientsMu.Unlock()
-	
+
 	// Check again after acquiring write lock (another goroutine may have created it)
 	if client, exists := h.httpClients[providerName]; exists {
 		return client
@@ -462,7 +463,7 @@ func (h *OAuth2Handler) getOrCreateHttpClient(providerName string, providerConfi
 
 	// Create new client
 	timeout := time.Duration(min(3, providerConfig.CallbackTimeout)) * time.Second
-	
+
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: providerConfig.InsecureSkipVerify,
@@ -536,6 +537,9 @@ func (h *OAuth2Handler) HandleOAuthCallback(w http.ResponseWriter, r *http.Reque
 
 	userinfo := getUserInfo(h.cfg, userInfoClient, h.cfg.OAuth2Providers[registeredState.providerName])
 
+	// Append AddToGroup if configured for this provider
+	usergroup := appendAddToGroup(userinfo.Usergroup, providerConfig.AddToGroup)
+
 	// Generate a fresh cryptographically secure session ID (do not reuse the state)
 	sessionID, err := randString(32)
 	if err != nil {
@@ -547,9 +551,9 @@ func (h *OAuth2Handler) HandleOAuthCallback(w http.ResponseWriter, r *http.Reque
 	// Register the user session with the new session ID (not the state)
 	// Use instance-based session storage if available, otherwise fall back to global (deprecated)
 	if h.sessionStorage != nil {
-		h.sessionStorage.RegisterSession(h.cfg.GetDir(), h.cfg.GetSessionFileName(), "oauth2", sessionID, userinfo.Username, userinfo.Usergroup)
+		h.sessionStorage.RegisterSession(h.cfg.GetDir(), h.cfg.GetSessionFileName(), "oauth2", sessionID, userinfo.Username, usergroup)
 	} else {
-		sessions.RegisterUserSession(h.cfg, "oauth2", sessionID, userinfo.Username, userinfo.Usergroup)
+		sessions.RegisterUserSession(h.cfg, "oauth2", sessionID, userinfo.Username, usergroup)
 	}
 
 	// State was already deleted in checkOAuthCallbackCookie to prevent replay
@@ -558,7 +562,7 @@ func (h *OAuth2Handler) HandleOAuthCallback(w http.ResponseWriter, r *http.Reque
 		"state":     state,
 		"sessionID": sessionID,
 		"username":  userinfo.Username,
-		"usergroup": userinfo.Usergroup,
+		"usergroup": usergroup,
 		"provider":  registeredState.providerName,
 	}).Infof("OAuth2 authentication successful, session registered")
 
@@ -649,6 +653,30 @@ func previewValue(value string) string {
 	return value
 }
 
+// appendAddToGroup appends the AddToGroup value to the usergroup string if it's set.
+// Groups are space-separated, and duplicates are avoided.
+func appendAddToGroup(usergroup string, addToGroup string) string {
+	if addToGroup == "" {
+		return usergroup
+	}
+
+	// Parse existing groups
+	groups := strings.Fields(usergroup)
+
+	// Check if addToGroup is already in the list
+	for _, group := range groups {
+		if group == addToGroup {
+			return usergroup // Already present, no need to add
+		}
+	}
+
+	// Append the new group
+	if usergroup == "" {
+		return addToGroup
+	}
+	return usergroup + " " + addToGroup
+}
+
 func (h *OAuth2Handler) getOAuth2Cookie(context *authTypes.AuthCheckingContext) (*http.Cookie, []string, bool) {
 	allCookies := context.Request.Cookies()
 	cookieNames := make([]string, 0, len(allCookies))
@@ -707,6 +735,8 @@ func (h *OAuth2Handler) createAuthenticatedUserFromSession(authCtx *authTypes.Au
 		return nil
 	}
 
+	// Note: AddToGroup is already appended to sess.Usergroup when the session was registered
+	// in HandleOAuthCallback. We use the stored value directly here.
 	user := &authTypes.AuthenticatedUser{
 		Username:      sess.Username,
 		UsergroupLine: sess.Usergroup,

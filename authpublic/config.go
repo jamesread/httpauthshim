@@ -156,6 +156,7 @@ type OAuth2Provider struct {
 	RedirectURL        string   `yaml:"redirectUrl"`
 	CertBundlePath     string   `yaml:"certBundlePath"`
 	CallbackTimeout    int      `yaml:"callbackTimeout"`
+	AddToGroup         string   `yaml:"addToGroup"` // Adds all users authenticated with this provider to a dummy usergroup with this name
 }
 
 // GetDir returns the base directory for storing auth-related files.

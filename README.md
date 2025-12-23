@@ -31,34 +31,69 @@ go get github.com/jamesread/httpauthshim
 package main
 
 import (
+    "log"
     "net/http"
-    
+
     "github.com/jamesread/httpauthshim"
     "github.com/jamesread/httpauthshim/authpublic"
+    "github.com/jamesread/httpauthshim/providers/hasoauth2"
 )
 
-func handler(w http.ResponseWriter, r *http.Request) {
+var authCtx *auth.AuthShimContext
+var oauth2Handler *hasoauth2.OAuth2Handler
+
+func setupAuth() error {
     cfg := &authpublic.Config{
-        // Configure your authentication methods
+        // Configure OAuth2 with GitHub
+        OAuth2Providers: map[string]*authpublic.OAuth2Provider{
+            "github": {
+                ClientID:     "your-github-client-id",
+                ClientSecret: "your-github-client-secret",
+            },
+        },
+        OAuth2RedirectURL: "http://localhost:8080/oauth/callback",
     }
-    
+
     // Create an AuthShimContext - this is the main entry point
-    ctx, err := auth.NewAuthShimContext(cfg)
+    var err error
+    authCtx, err = auth.NewAuthShimContext(cfg)
     if err != nil {
-        http.Error(w, "Failed to initialize auth", http.StatusInternalServerError)
-        return
+        return err
     }
-    
+
+    // Set up OAuth2 handler
+    oauth2Handler = hasoauth2.NewOAuth2Handler(cfg, authCtx.Sessions)
+
+    // Add OAuth2 to auth chain
+    authCtx.AddProvider(oauth2Handler.CheckUserFromOAuth2Cookie)
+
+    return nil
+}
+
+func handler(w http.ResponseWriter, r *http.Request) {
     // Authenticate the user
-    user := ctx.AuthFromHttpReq(r)
-    
+    user := authCtx.AuthFromHttpReq(r)
+
     if user.IsGuest() {
         http.Error(w, "Unauthorized", http.StatusUnauthorized)
         return
     }
-    
+
     // User is authenticated, proceed with request
     w.Write([]byte("Hello, " + user.Username))
+}
+
+func main() {
+    if err := setupAuth(); err != nil {
+        log.Fatal("Failed to initialize auth:", err)
+    }
+
+    // Set up OAuth2 routes
+    http.HandleFunc("/oauth/login", oauth2Handler.HandleOAuthLogin)
+    http.HandleFunc("/oauth/callback", oauth2Handler.HandleOAuthCallback)
+
+    http.HandleFunc("/", handler)
+    log.Fatal(http.ListenAndServe(":8080", nil))
 }
 ```
 
