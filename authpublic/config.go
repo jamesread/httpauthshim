@@ -37,6 +37,12 @@ type Config struct {
 
 	// Mtls is the mTLS (Mutual TLS) configuration
 	Mtls MtlsConfig `yaml:"mtls"`
+
+	// BasicAuth is the HTTP Basic authentication configuration
+	BasicAuth BasicAuthConfig `yaml:"basicAuth"`
+
+	// BearerToken is the Bearer token authentication configuration
+	BearerToken BearerTokenConfig `yaml:"bearerToken"`
 }
 
 // JwtConfig contains configuration for JWT authentication
@@ -127,6 +133,33 @@ type MtlsConfig struct {
 	// GroupSeparator separates multiple groups in a single OID value
 	// Default: empty (treat as single group)
 	GroupSeparator string `yaml:"groupSeparator"`
+}
+
+// BasicAuthConfig contains configuration for HTTP Basic authentication
+type BasicAuthConfig struct {
+	// Enabled enables HTTP Basic authentication
+	Enabled bool `yaml:"enabled"`
+}
+
+// BearerTokenConfig contains configuration for Bearer token authentication
+type BearerTokenConfig struct {
+	// Enabled enables Bearer token authentication
+	Enabled bool `yaml:"enabled"`
+
+	// Tokens is a map of bearer tokens to user information
+	Tokens map[string]*BearerTokenUser `yaml:"tokens"`
+
+	// Header is the HTTP header name containing the Bearer token (defaults to "Authorization")
+	Header string `yaml:"header"`
+}
+
+// BearerTokenUser contains user information for a Bearer token
+type BearerTokenUser struct {
+	// Username is the username associated with this token
+	Username string `yaml:"username"`
+
+	// Usergroup is the usergroup(s) associated with this token (space-separated)
+	Usergroup string `yaml:"usergroup"`
 }
 
 type LocalUsersConfig struct {
