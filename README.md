@@ -33,7 +33,7 @@ package main
 import (
     "net/http"
     
-    "github.com/jamesread/httpauthshim"  // Imports the 'auth' package
+    "github.com/jamesread/httpauthshim"
     "github.com/jamesread/httpauthshim/authpublic"
 )
 
