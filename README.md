@@ -1,5 +1,5 @@
 <div align = "center">
-  <img alt = "project logo" src = "https://github.com/OliveTin/OliveTin/blob/main/frontend/OliveTinLogo.png" width = "128" />
+  <img alt = "project logo" src = "https://github.com/jamesread/httpauthshim/blob/main/logo.svg" width = "128" />
   <h1>httpauthshim</h1>
 
   The glue code for HTTP authentication in Go.
