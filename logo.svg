@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <!-- Placeholder logo - replace with actual logo -->
+  <rect width="200" height="200" fill="#4a90e2" rx="10"/>
+  <text x="100" y="110" font-family="Arial, sans-serif" font-size="24" font-weight="bold" fill="white" text-anchor="middle">HTTP Auth</text>
+</svg>
