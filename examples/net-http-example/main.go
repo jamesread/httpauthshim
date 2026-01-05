@@ -15,6 +15,7 @@ import (
 	"github.com/jamesread/httpauthshim/providers/haslocal"
 	"github.com/jamesread/httpauthshim/providers/hasmtls"
 	"github.com/jamesread/httpauthshim/providers/hasoauth2"
+	"github.com/jamesread/httpauthshim/sessions"
 )
 
 func main() {
@@ -29,10 +30,10 @@ func main() {
 
 		// JWT authentication
 		Jwt: authpublic.JwtConfig{
-			Header:        "Authorization",
-			ClaimUsername: "sub",
+			Header:         "Authorization",
+			ClaimUsername:  "sub",
 			ClaimUserGroup: "groups",
-			CookieName:    "auth-token",
+			CookieName:     "auth-token",
 		},
 
 		// Local users configuration
@@ -59,7 +60,7 @@ func main() {
 
 		// mTLS (Mutual TLS) configuration
 		Mtls: authpublic.MtlsConfig{
-			Enabled:             true,
+			Enabled:              true,
 			RequireClientCert:    false, // Set to true to require client certs
 			UsernameFromCN:       true,  // Extract username from Common Name
 			UsernameFromSANEmail: false, // Or extract from SAN email
@@ -70,15 +71,18 @@ func main() {
 		// Access Control Lists
 		AccessControlLists: []authpublic.AccessControlList{
 			{
-				Name:           "admin",
-				MatchUsernames: []string{"admin"},
+				Name:            "admin",
+				MatchUsernames:  []string{"admin"},
 				MatchUsergroups: []string{"admin"},
 			},
 		},
 	}
 
+	// Create session storage with YAML persistence
+	sessionStorage := sessions.NewSessionStorage(sessions.NewYAMLPersistence())
+
 	// Create AuthShimContext - this is the main entry point
-	authCtx, err := auth.NewAuthShimContext(cfg)
+	authCtx, err := auth.NewAuthShimContext(cfg, sessionStorage)
 	if err != nil {
 		log.Fatalf("Failed to create auth context: %v", err)
 	}
@@ -209,7 +213,7 @@ func main() {
 	<p>Current user: <strong>%s</strong></p>
 	<p>Provider: %s</p>
 	<p>User Group: %s</p>
-	
+
 	<h2>Endpoints:</h2>
 	<ul>
 		<li><a href="/api/protected">Protected API</a> - Requires authentication</li>

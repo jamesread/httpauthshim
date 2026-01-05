@@ -43,6 +43,12 @@ type Config struct {
 
 	// BearerToken is the Bearer token authentication configuration
 	BearerToken BearerTokenConfig `yaml:"bearerToken"`
+
+	// OIDCProviders is a map of OIDC provider configurations
+	OIDCProviders map[string]*OIDCProvider `yaml:"oidcProviders"`
+
+	// OIDCRedirectURL is the redirect URL for OIDC callbacks
+	OIDCRedirectURL string `yaml:"oidcRedirectUrl"`
 }
 
 // JwtConfig contains configuration for JWT authentication
@@ -160,6 +166,56 @@ type BearerTokenUser struct {
 
 	// Usergroup is the usergroup(s) associated with this token (space-separated)
 	Usergroup string `yaml:"usergroup"`
+}
+
+// OIDCProvider contains configuration for an OIDC provider
+// OIDC extends OAuth2 with ID tokens and standardized endpoints
+type OIDCProvider struct {
+	// IssuerURL is the OIDC issuer URL (e.g., https://accounts.google.com)
+	// If set, discovery document will be fetched from {IssuerURL}/.well-known/openid-configuration
+	IssuerURL string `yaml:"issuerUrl"`
+
+	// ClientID is the OAuth2/OIDC client ID
+	ClientID string `yaml:"clientId"`
+
+	// ClientSecret is the OAuth2/OIDC client secret
+	ClientSecret string `yaml:"clientSecret"`
+
+	// Scopes are the OAuth2 scopes to request (should include "openid" for OIDC)
+	Scopes []string `yaml:"scopes"`
+
+	// AuthUrl is the authorization URL (optional if IssuerURL is set)
+	AuthUrl string `yaml:"authUrl"`
+
+	// TokenUrl is the token URL (optional if IssuerURL is set)
+	TokenUrl string `yaml:"tokenUrl"`
+
+	// UserInfoUrl is the userinfo endpoint URL (optional if IssuerURL is set)
+	UserInfoUrl string `yaml:"userInfoUrl"`
+
+	// UsernameField is the field name in userinfo/ID token for username (defaults to "sub" or "preferred_username")
+	UsernameField string `yaml:"usernameField"`
+
+	// UserGroupField is the field name in userinfo/ID token for usergroup
+	UserGroupField string `yaml:"userGroupField"`
+
+	// InsecureSkipVerify skips TLS certificate verification
+	InsecureSkipVerify bool `yaml:"insecureSkipVerify"`
+
+	// CertBundlePath is the path to a CA certificate bundle for TLS verification
+	CertBundlePath string `yaml:"certBundlePath"`
+
+	// CallbackTimeout is the timeout for callback requests in seconds
+	CallbackTimeout int `yaml:"callbackTimeout"`
+
+	// AddToGroup adds all users authenticated with this provider to a dummy usergroup with this name
+	AddToGroup string `yaml:"addToGroup"`
+
+	// ClaimUsername is the JWT claim key for username in ID token (defaults to "sub" or "preferred_username")
+	ClaimUsername string `yaml:"claimUsername"`
+
+	// ClaimUserGroup is the JWT claim key for user groups in ID token
+	ClaimUserGroup string `yaml:"claimUserGroup"`
 }
 
 type LocalUsersConfig struct {

@@ -30,6 +30,9 @@ type OAuth2Handler struct {
 	shutdownChan        chan struct{} // Channel to signal shutdown
 	shutdownOnce        sync.Once     // Ensures shutdown is called only once
 
+	// SessionStorage returns the session storage (exported for reuse by OIDC)
+	SessionStorage func() *sessions.SessionStorage
+
 	// Cached HTTP clients per provider (keyed by provider name)
 	httpClients   map[string]*http.Client
 	httpClientsMu sync.RWMutex // Protects httpClients map
@@ -47,6 +50,9 @@ func NewOAuth2Handler(cfg *authTypes.Config, sessionStorage *sessions.SessionSto
 		cfg:            cfg,
 		sessionStorage: sessionStorage,
 		shutdownChan:   make(chan struct{}),
+		SessionStorage: func() *sessions.SessionStorage {
+			return sessionStorage
+		},
 	}
 
 	h.callbackStates = make(map[string]*callbackState)
@@ -142,6 +148,11 @@ func completeProviderConfig(providerName string, providerConfig *authTypes.OAuth
 	}
 }
 
+// GetOAuth2Config returns the OAuth2 config for a provider (exported for reuse by OIDC)
+func (h *OAuth2Handler) GetOAuth2Config(providerName string) (*oauth2.Config, error) {
+	return h.getOAuth2Config(providerName)
+}
+
 func (h *OAuth2Handler) getOAuth2Config(providerName string) (*oauth2.Config, error) {
 	config, ok := h.registeredProviders[providerName]
 
@@ -214,6 +225,11 @@ func (h *OAuth2Handler) cleanupExpiredStates() {
 	}
 }
 
+// RandString generates a random base64-encoded string (exported for reuse by OIDC)
+func RandString(nByte int) (string, error) {
+	return randString(nByte)
+}
+
 func randString(nByte int) (string, error) {
 	b := make([]byte, nByte)
 
@@ -252,7 +268,7 @@ func (h *OAuth2Handler) setOAuthCallbackCookie(w http.ResponseWriter, r *http.Re
 func (h *OAuth2Handler) HandleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	log.Infof("OAuth2 login request: %v", r.URL.Query())
 
-	state, err := randString(16)
+	state, err := RandString(16)
 
 	log.Infof("OAuth2 state: %v", state)
 
@@ -262,7 +278,7 @@ func (h *OAuth2Handler) HandleOAuthLogin(w http.ResponseWriter, r *http.Request)
 	}
 
 	providerName := r.URL.Query().Get("provider")
-	provider, err := h.getOAuth2Config(providerName)
+	provider, err := h.GetOAuth2Config(providerName)
 
 	if err != nil {
 		log.Errorf("Failed to get provider config: %v %v", providerName, err)
@@ -442,6 +458,11 @@ func (h *OAuth2Handler) getOAuthCertBundle(providerConfig *authTypes.OAuth2Provi
 	return caCertPool
 }
 
+// GetOrCreateHttpClient gets or creates a cached HTTP client for a provider (exported for reuse by OIDC)
+func (h *OAuth2Handler) GetOrCreateHttpClient(providerName string, providerConfig *authTypes.OAuth2Provider) *http.Client {
+	return h.getOrCreateHttpClient(providerName, providerConfig)
+}
+
 // getOrCreateHttpClient gets or creates a cached HTTP client for a provider
 func (h *OAuth2Handler) getOrCreateHttpClient(providerName string, providerConfig *authTypes.OAuth2Provider) *http.Client {
 	// Check cache first (with read lock)
@@ -511,7 +532,7 @@ func (h *OAuth2Handler) HandleOAuthCallback(w http.ResponseWriter, r *http.Reque
 	providerConfig := h.cfg.OAuth2Providers[registeredState.providerName]
 
 	// Get or create cached HTTP client for this provider
-	baseClient := h.getOrCreateHttpClient(registeredState.providerName, providerConfig)
+	baseClient := h.GetOrCreateHttpClient(registeredState.providerName, providerConfig)
 
 	// Use request context to respect cancellation and timeouts
 	ctx := r.Context()
@@ -538,10 +559,10 @@ func (h *OAuth2Handler) HandleOAuthCallback(w http.ResponseWriter, r *http.Reque
 	userinfo := getUserInfo(h.cfg, userInfoClient, h.cfg.OAuth2Providers[registeredState.providerName])
 
 	// Append AddToGroup if configured for this provider
-	usergroup := appendAddToGroup(userinfo.Usergroup, providerConfig.AddToGroup)
+	usergroup := AppendAddToGroup(userinfo.Usergroup, providerConfig.AddToGroup)
 
 	// Generate a fresh cryptographically secure session ID (do not reuse the state)
-	sessionID, err := randString(32)
+	sessionID, err := RandString(32)
 	if err != nil {
 		log.Errorf("Failed to generate session ID: %v", err)
 		http.Error(w, "Failed to generate session ID", http.StatusInternalServerError)
@@ -576,6 +597,14 @@ func (h *OAuth2Handler) HandleOAuthCallback(w http.ResponseWriter, r *http.Reque
 type UserInfo struct {
 	Username  string
 	Usergroup string
+}
+
+// GetUserInfo fetches user information from the userinfo endpoint.
+// Exported for reuse by OIDC provider.
+//
+//gocyclo:ignore
+func GetUserInfo(cfg *authTypes.Config, client *http.Client, provider *authTypes.OAuth2Provider) *UserInfo {
+	return getUserInfo(cfg, client, provider)
 }
 
 //gocyclo:ignore
@@ -651,6 +680,13 @@ func previewValue(value string) string {
 		return value[:8] + "..."
 	}
 	return value
+}
+
+// AppendAddToGroup appends the AddToGroup value to the usergroup string if it's set.
+// Groups are space-separated, and duplicates are avoided.
+// Exported for reuse by OIDC provider.
+func AppendAddToGroup(usergroup string, addToGroup string) string {
+	return appendAddToGroup(usergroup, addToGroup)
 }
 
 // appendAddToGroup appends the AddToGroup value to the usergroup string if it's set.

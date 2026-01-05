@@ -37,6 +37,7 @@ import (
     "github.com/jamesread/httpauthshim"
     "github.com/jamesread/httpauthshim/authpublic"
     "github.com/jamesread/httpauthshim/providers/hasoauth2"
+    "github.com/jamesread/httpauthshim/sessions"
 )
 
 var authCtx *auth.AuthShimContext
@@ -54,9 +55,12 @@ func setupAuth() error {
         OAuth2RedirectURL: "http://localhost:8080/oauth/callback",
     }
 
+    // Create session storage with YAML persistence
+    sessionStorage := sessions.NewSessionStorage(sessions.NewYAMLPersistence())
+
     // Create an AuthShimContext - this is the main entry point
     var err error
-    authCtx, err = auth.NewAuthShimContext(cfg)
+    authCtx, err = auth.NewAuthShimContext(cfg, sessionStorage)
     if err != nil {
         return err
     }
@@ -115,10 +119,16 @@ Supports multiple verification methods:
 Built-in support for GitHub and Google OAuth2 providers. Easily extensible for other providers.
 
 ```go
-import "github.com/jamesread/httpauthshim/providers/hasoauth2"
+import (
+    "github.com/jamesread/httpauthshim/providers/hasoauth2"
+    "github.com/jamesread/httpauthshim/sessions"
+)
+
+// Create session storage with YAML persistence
+sessionStorage := sessions.NewSessionStorage(sessions.NewYAMLPersistence())
 
 // Create AuthShimContext first
-ctx, err := auth.NewAuthShimContext(cfg)
+ctx, err := auth.NewAuthShimContext(cfg, sessionStorage)
 if err != nil {
     // Handle error
 }
@@ -175,7 +185,10 @@ cfg := &authpublic.Config{
     },
 }
 
-ctx, _ := auth.NewAuthShimContext(cfg)
+// Create session storage with YAML persistence
+sessionStorage := sessions.NewSessionStorage(sessions.NewYAMLPersistence())
+
+ctx, _ := auth.NewAuthShimContext(cfg, sessionStorage)
 ctx.AddProvider(hasmtls.CheckUserFromMtls)
 ```
 
@@ -240,8 +253,13 @@ accessControlLists:
 Add custom authentication handlers to your `AuthShimContext`:
 
 ```go
+import "github.com/jamesread/httpauthshim/sessions"
+
+// Create session storage with YAML persistence
+sessionStorage := sessions.NewSessionStorage(sessions.NewYAMLPersistence())
+
 // Create AuthShimContext first
-ctx, err := auth.NewAuthShimContext(cfg)
+ctx, err := auth.NewAuthShimContext(cfg, sessionStorage)
 if err != nil {
     // Handle error
 }
@@ -263,8 +281,13 @@ Sessions are persisted to disk in YAML format. By default, sessions are stored i
 When using `AuthShimContext`, sessions are automatically loaded on creation and managed through the context:
 
 ```go
+import "github.com/jamesread/httpauthshim/sessions"
+
+// Create session storage with YAML persistence
+sessionStorage := sessions.NewSessionStorage(sessions.NewYAMLPersistence())
+
 // Create context (sessions are automatically loaded)
-ctx, err := auth.NewAuthShimContext(cfg)
+ctx, err := auth.NewAuthShimContext(cfg, sessionStorage)
 if err != nil {
     // Handle error
 }

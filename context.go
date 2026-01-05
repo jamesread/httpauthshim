@@ -25,24 +25,29 @@ import (
 // important in long-running applications. Consider using defer or ensuring Shutdown
 // is called in your application's cleanup logic (e.g., signal handlers).
 type AuthShimContext struct {
-	Config   *authpublic.Config
-	Sessions *sessions.SessionStorage
-	chain    []func(*authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser
-	chainMu  sync.RWMutex
+	Config       *authpublic.Config
+	Sessions     *sessions.SessionStorage
+	chain        []func(*authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser
+	chainMu      sync.RWMutex
 	shutdownOnce sync.Once // Ensures shutdown is only called once
 }
 
-// NewAuthShimContext creates a new AuthShimContext with the provided config.
-// It initializes session storage and loads existing sessions from disk.
+// NewAuthShimContext creates a new AuthShimContext with the provided config and session storage.
+// It loads existing sessions from disk.
 // It validates the configuration and returns an error if validation fails.
-func NewAuthShimContext(cfg *authpublic.Config) (*AuthShimContext, error) {
+// Callers must explicitly provide a SessionStorage implementation.
+func NewAuthShimContext(cfg *authpublic.Config, sessionStorage *sessions.SessionStorage) (*AuthShimContext, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
 
+	if sessionStorage == nil {
+		return nil, fmt.Errorf("sessionStorage cannot be nil; callers must explicitly provide a SessionStorage implementation")
+	}
+
 	ctx := &AuthShimContext{
 		Config:   cfg,
-		Sessions: sessions.NewSessionStorage(nil), // nil defaults to YAML persistence
+		Sessions: sessionStorage,
 		chain:    make([]func(*authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser, 0),
 	}
 
@@ -290,11 +295,11 @@ func (ctx *AuthShimContext) AddProvider(check func(*authpublic.AuthCheckingConte
 func (ctx *AuthShimContext) RemoveProviderByIndex(index int) error {
 	ctx.chainMu.Lock()
 	defer ctx.chainMu.Unlock()
-	
+
 	if index < 0 || index >= len(ctx.chain) {
 		return fmt.Errorf("provider index %d out of bounds (chain length: %d)", index, len(ctx.chain))
 	}
-	
+
 	ctx.chain = append(ctx.chain[:index], ctx.chain[index+1:]...)
 	return nil
 }
@@ -311,12 +316,12 @@ func (ctx *AuthShimContext) ClearProviders() {
 func (ctx *AuthShimContext) InsertProvider(index int, check func(*authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser) {
 	ctx.chainMu.Lock()
 	defer ctx.chainMu.Unlock()
-	
+
 	if index < 0 || index >= len(ctx.chain) {
 		ctx.chain = append(ctx.chain, check)
 		return
 	}
-	
+
 	ctx.chain = append(ctx.chain[:index], append([]func(*authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser{check}, ctx.chain[index:]...)...)
 }
 
@@ -325,7 +330,7 @@ func (ctx *AuthShimContext) InsertProvider(index int, check func(*authpublic.Aut
 func (ctx *AuthShimContext) GetProviders() []func(*authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser {
 	ctx.chainMu.RLock()
 	defer ctx.chainMu.RUnlock()
-	
+
 	chain := make([]func(*authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser, len(ctx.chain))
 	copy(chain, ctx.chain)
 	return chain
