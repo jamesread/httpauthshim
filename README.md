@@ -8,7 +8,7 @@
   [![Discord](https://img.shields.io/discord/846737624960860180?label=Discord%20Server)](https://discord.gg/jhYWWpNJ3v)
 </div>
 
-A Go library for HTTP request authentication that supports multiple authentication methods including JWT, OAuth2, local sessions, and trusted headers.
+HTTP Auth against OAuth2, mTLS, external JWT (key/hmac), local users, trusted headers and even HTTP Basic.
 
 ## Features
 
