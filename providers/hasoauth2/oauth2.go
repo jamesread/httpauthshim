@@ -623,7 +623,7 @@ func getUserInfo(cfg *authTypes.Config, client *http.Client, provider *authTypes
 		return ret
 	}
 
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	contents, err := io.ReadAll(res.Body)
 

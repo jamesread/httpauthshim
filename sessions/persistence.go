@@ -187,7 +187,7 @@ func performAtomicWrite(tempPath, filePath string, data []byte) error {
 
 	// Atomic rename - if this fails, temp file remains but main file is unchanged
 	if err := os.Rename(tempPath, filePath); err != nil {
-		os.Remove(tempPath) // Try to clean up temp file
+		_ = os.Remove(tempPath) // best-effort cleanup
 		return fmt.Errorf("failed to rename temporary session file: %w", err)
 	}
 	return nil

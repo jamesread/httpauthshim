@@ -545,7 +545,7 @@ func checkLockFileStale(lockPath string) bool {
 // tryAcquireLockWithStaleCheck attempts to acquire a lock, removing stale locks if found
 func tryAcquireLockWithStaleCheck(lockPath string) (*os.File, error) {
 	if checkLockFileStale(lockPath) {
-		os.Remove(lockPath)
+		_ = os.Remove(lockPath)
 		// Retry immediately after removing stale lock
 		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 		if err == nil {
@@ -599,7 +599,7 @@ func handleExistingLock(lockPath string) (*os.File, error) {
 		logrus.WithFields(logrus.Fields{
 			"lockPath": lockPath,
 		}).Warn("Removing stale lock file")
-		os.Remove(lockPath)
+		_ = os.Remove(lockPath)
 		// Try once more after removing stale lock
 		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 		if err == nil {
@@ -619,13 +619,13 @@ func handleExistingLock(lockPath string) (*os.File, error) {
 func writeLockFilePID(lockFile *os.File, lockPath string) error {
 	pid := fmt.Sprintf("%d\n", os.Getpid())
 	if _, err := lockFile.WriteString(pid); err != nil {
-		lockFile.Close()
-		os.Remove(lockPath)
+		_ = lockFile.Close()
+		_ = os.Remove(lockPath)
 		return fmt.Errorf("failed to write PID to lock file: %w", err)
 	}
 	if err := lockFile.Sync(); err != nil {
-		lockFile.Close()
-		os.Remove(lockPath)
+		_ = lockFile.Close()
+		_ = os.Remove(lockPath)
 		return fmt.Errorf("failed to sync lock file: %w", err)
 	}
 	return nil
@@ -666,8 +666,8 @@ func acquireFileLock(dir, filename string) (*os.File, func(), error) {
 	}
 
 	cleanup := func() {
-		lockFile.Close()
-		os.Remove(lockPath)
+		_ = lockFile.Close()
+		_ = os.Remove(lockPath)
 	}
 
 	return lockFile, cleanup, nil

@@ -45,7 +45,7 @@ func createKeys(t *testing.T) (*rsa.PrivateKey, string) {
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
-	defer tmpFile.Close()
+	defer func() { _ = tmpFile.Close() }()
 
 	t.Logf("Created File: %s", tmpFile.Name())
 
@@ -100,7 +100,7 @@ func setupJWTTestHandler(t *testing.T, cfg *authpublic.Config) http.Handler {
 }
 
 func verifyJWTResponse(t *testing.T, res *http.Response, expectCode int) {
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	assert.Equal(t, expectCode, res.StatusCode)
 	body, _ := io.ReadAll(res.Body)
 	t.Logf("Response body: %s", string(body))
@@ -108,7 +108,7 @@ func verifyJWTResponse(t *testing.T, res *http.Response, expectCode int) {
 
 func testJwkValidation(t *testing.T, expire int64, expectCode int) {
 	privateKey, publicKeyPath := createKeys(t)
-	defer os.Remove(publicKeyPath)
+	defer func() { _ = os.Remove(publicKeyPath) }()
 
 	cfg := &authpublic.Config{}
 	cfg.Jwt.PubKeyPath = publicKeyPath
@@ -165,7 +165,7 @@ func makeJWTRequest(t *testing.T, srv *httptest.Server, tokenStr string) *http.R
 
 func TestJWTHeader(t *testing.T) {
 	privateKey, publicKeyPath := createKeys(t)
-	defer os.Remove(publicKeyPath)
+	defer func() { _ = os.Remove(publicKeyPath) }()
 
 	cfg := &authpublic.Config{}
 	cfg.Jwt.PubKeyPath = publicKeyPath
@@ -196,7 +196,7 @@ func TestJWTHeader(t *testing.T) {
 	defer srv.Close()
 
 	res := makeJWTRequest(t, srv, tokenStr)
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	assert.Equal(t, 200, res.StatusCode)
 	body, _ := io.ReadAll(res.Body)
