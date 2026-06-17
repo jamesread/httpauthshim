@@ -13,6 +13,15 @@ type Config struct {
 	OAuth2Providers   map[string]*OAuth2Provider `yaml:"oauth2Providers"`
 	OAuth2RedirectURL string                     `yaml:"oauth2RedirectUrl"`
 
+	// OAuth2CookieSecure forces the Secure flag on OAuth2 session cookies.
+	// When false (default), Secure is set automatically for TLS requests and when
+	// X-Forwarded-Proto is "https" (common behind reverse proxies).
+	OAuth2CookieSecure bool `yaml:"oauth2CookieSecure"`
+
+	// OAuth2DisablePKCE disables PKCE for the authorization code flow.
+	// PKCE is enabled by default and should only be disabled for legacy providers.
+	OAuth2DisablePKCE bool `yaml:"oauth2DisablePkce"`
+
 	InsecureAllowDumpOAuth2UserData bool `yaml:"insecureAllowDumpOAuth2UserData"`
 
 	AccessControlLists []AccessControlList `yaml:"accessControlLists"`
@@ -86,6 +95,11 @@ type JwtConfig struct {
 
 // HttpHeaderConfig contains configuration for trusted HTTP header authentication
 type HttpHeaderConfig struct {
+	// Enabled enables trusted HTTP header authentication (default: false).
+	// Only enable when requests pass through a reverse proxy that strips or sets
+	// these headers; never expose this provider directly to untrusted clients.
+	Enabled bool `yaml:"enabled"`
+
 	// Username is the HTTP header name containing the username
 	Username string `yaml:"username"`
 
@@ -275,6 +289,14 @@ func (c *Config) GetLocalSessionCookieName() string {
 		return c.LocalSessionCookieName
 	}
 	return "auth-sid-local"
+}
+
+// OAuth2PKCEEnabled reports whether PKCE should be used for OAuth2 flows.
+func (c *Config) OAuth2PKCEEnabled() bool {
+	if c == nil {
+		return true
+	}
+	return !c.OAuth2DisablePKCE
 }
 
 // GetOAuth2SessionCookieName returns the cookie name for OAuth2 sessions, with default fallback

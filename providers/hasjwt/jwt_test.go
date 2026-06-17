@@ -202,3 +202,138 @@ func TestJWTHeader(t *testing.T) {
 	body, _ := io.ReadAll(res.Body)
 	t.Logf("Response body: %s", string(body))
 }
+
+func baseJWTConfig(publicKeyPath string) *authpublic.Config {
+	cfg := &authpublic.Config{}
+	cfg.Jwt.PubKeyPath = publicKeyPath
+	cfg.Jwt.ClaimUsername = "sub"
+	cfg.Jwt.ClaimUserGroup = "olivetinGroup"
+	cfg.Jwt.Header = "Authorization"
+	return cfg
+}
+
+func checkUserFromBearerToken(t *testing.T, cfg *authpublic.Config, tokenStr string) *authpublic.AuthenticatedUser {
+	t.Helper()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenStr)
+
+	return CheckUserFromJwtHeader(&authpublic.AuthCheckingContext{
+		Request: req,
+		Config:  cfg,
+	})
+}
+
+func TestJWTRejectsTokenWithoutExp(t *testing.T) {
+	privateKey, publicKeyPath := createKeys(t)
+	defer func() { _ = os.Remove(publicKeyPath) }()
+
+	token := jwt.New(jwt.SigningMethodRS256)
+	claims := token.Claims.(jwt.MapClaims)
+	claims["sub"] = "test"
+	tokenStr, err := token.SignedString(privateKey)
+	assert.NoError(t, err)
+
+	user := checkUserFromBearerToken(t, baseJWTConfig(publicKeyPath), tokenStr)
+	assert.Nil(t, user)
+}
+
+func TestJWTRejectsWrongAudience(t *testing.T) {
+	privateKey, publicKeyPath := createKeys(t)
+	defer func() { _ = os.Remove(publicKeyPath) }()
+
+	token := jwt.New(jwt.SigningMethodRS256)
+	claims := token.Claims.(jwt.MapClaims)
+	claims["sub"] = "test"
+	claims["exp"] = time.Now().Add(time.Hour).Unix()
+	claims["aud"] = "wrong-audience"
+	tokenStr, err := token.SignedString(privateKey)
+	assert.NoError(t, err)
+
+	cfg := baseJWTConfig(publicKeyPath)
+	cfg.Jwt.Aud = "expected-audience"
+
+	user := checkUserFromBearerToken(t, cfg, tokenStr)
+	assert.Nil(t, user)
+}
+
+func TestJWTAcceptsMatchingAudience(t *testing.T) {
+	privateKey, publicKeyPath := createKeys(t)
+	defer func() { _ = os.Remove(publicKeyPath) }()
+
+	token := jwt.New(jwt.SigningMethodRS256)
+	claims := token.Claims.(jwt.MapClaims)
+	claims["sub"] = "test"
+	claims["exp"] = time.Now().Add(time.Hour).Unix()
+	claims["aud"] = "expected-audience"
+	tokenStr, err := token.SignedString(privateKey)
+	assert.NoError(t, err)
+
+	cfg := baseJWTConfig(publicKeyPath)
+	cfg.Jwt.Aud = "expected-audience"
+
+	user := checkUserFromBearerToken(t, cfg, tokenStr)
+	assert.NotNil(t, user)
+	assert.Equal(t, "test", user.Username)
+}
+
+func TestJWTRejectsWrongIssuer(t *testing.T) {
+	privateKey, publicKeyPath := createKeys(t)
+	defer func() { _ = os.Remove(publicKeyPath) }()
+
+	token := jwt.New(jwt.SigningMethodRS256)
+	claims := token.Claims.(jwt.MapClaims)
+	claims["sub"] = "test"
+	claims["exp"] = time.Now().Add(time.Hour).Unix()
+	claims["iss"] = "wrong-issuer"
+	tokenStr, err := token.SignedString(privateKey)
+	assert.NoError(t, err)
+
+	cfg := baseJWTConfig(publicKeyPath)
+	cfg.Jwt.Issuer = "expected-issuer"
+
+	user := checkUserFromBearerToken(t, cfg, tokenStr)
+	assert.Nil(t, user)
+}
+
+func TestHMACRejectsTokenWithoutExp(t *testing.T) {
+	secret := "test-hmac-secret"
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": "attacker",
+	})
+	tokenStr, err := token.SignedString([]byte(secret))
+	assert.NoError(t, err)
+
+	cfg := &authpublic.Config{
+		Jwt: authpublic.JwtConfig{
+			HmacSecret:    secret,
+			ClaimUsername: "sub",
+			Header:        "Authorization",
+		},
+	}
+
+	user := checkUserFromBearerToken(t, cfg, tokenStr)
+	assert.Nil(t, user)
+}
+
+func TestHMACAcceptsValidToken(t *testing.T) {
+	secret := "test-hmac-secret"
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": "alice",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	tokenStr, err := token.SignedString([]byte(secret))
+	assert.NoError(t, err)
+
+	cfg := &authpublic.Config{
+		Jwt: authpublic.JwtConfig{
+			HmacSecret:    secret,
+			ClaimUsername: "sub",
+			Header:        "Authorization",
+		},
+	}
+
+	user := checkUserFromBearerToken(t, cfg, tokenStr)
+	assert.NotNil(t, user)
+	assert.Equal(t, "alice", user.Username)
+}

@@ -6,24 +6,35 @@ import (
 	authpublic "github.com/jamesread/httpauthshim/authpublic"
 )
 
-//gocyclo:ignore
 func CheckUserFromHeaders(context *authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser {
-	u := &authpublic.AuthenticatedUser{}
-
-	if context.Config.HttpHeader.Username != "" {
-		u.Username = getHeaderKeyOrEmpty(context.Request.Header, context.Config.HttpHeader.Username)
+	if !isTrustedHeadersEnabled(context) {
+		return nil
 	}
 
-	if context.Config.HttpHeader.UserGroup != "" {
-		u.UsergroupLine = getHeaderKeyOrEmpty(context.Request.Header, context.Config.HttpHeader.UserGroup)
-	}
-
-	if prov := getHeaderKeyOrEmpty(context.Request.Header, "provider"); prov != "" {
-		u.Provider = prov
-	}
-
+	u := readUserFromTrustedHeaders(context)
 	if u.Username == "" && u.UsergroupLine == "" {
 		return nil
+	}
+
+	return u
+}
+
+func isTrustedHeadersEnabled(context *authpublic.AuthCheckingContext) bool {
+	return context.Config != nil && context.Config.HttpHeader.Enabled
+}
+
+func readUserFromTrustedHeaders(context *authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser {
+	u := &authpublic.AuthenticatedUser{
+		Provider: "trusted-header",
+	}
+
+	headerCfg := context.Config.HttpHeader
+	if headerCfg.Username != "" {
+		u.Username = getHeaderKeyOrEmpty(context.Request.Header, headerCfg.Username)
+	}
+
+	if headerCfg.UserGroup != "" {
+		u.UsergroupLine = getHeaderKeyOrEmpty(context.Request.Header, headerCfg.UserGroup)
 	}
 
 	return u

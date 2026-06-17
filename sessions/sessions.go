@@ -201,25 +201,26 @@ func (s *SessionStorage) deleteExpiredSession(provider, sid string, now int64) {
 
 func (s *SessionStorage) GetSession(provider string, sid string) *UserSession {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	if s.Providers[provider] == nil || s.Providers[provider].Sessions == nil {
+		s.mu.RUnlock()
 		return nil
 	}
 
 	session := s.Providers[provider].Sessions[sid]
 	if session == nil {
+		s.mu.RUnlock()
 		return nil
 	}
 
 	now := time.Now().Unix()
 	if session.Expiry < now {
-		// Release read lock before acquiring write lock
 		s.mu.RUnlock()
 		s.deleteExpiredSession(provider, sid, now)
 		return nil
 	}
 
+	s.mu.RUnlock()
 	return session
 }
 

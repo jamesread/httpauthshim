@@ -61,10 +61,16 @@ func NewOAuth2Handler(cfg *authTypes.Config, sessionStorage *sessions.SessionSto
 	h.certBundles = make(map[string]*x509.CertPool)
 	h.certBundleMtimes = make(map[string]time.Time)
 
-	log.Infof("OAuth2 providers: %v", cfg.OAuth2Providers)
+	log.Infof("OAuth2 providers registered: %v", oauthProviderNames(cfg.OAuth2Providers))
 
 	for providerName, providerConfig := range cfg.OAuth2Providers {
 		completeProviderConfig(providerName, providerConfig)
+
+		if providerConfig.InsecureSkipVerify {
+			log.WithFields(log.Fields{
+				"provider": providerName,
+			}).Warn("OAuth2 provider has InsecureSkipVerify enabled; TLS certificate verification is disabled")
+		}
 
 		newConfig := &oauth2.Config{
 			ClientID:     providerConfig.ClientID,
@@ -79,7 +85,10 @@ func NewOAuth2Handler(cfg *authTypes.Config, sessionStorage *sessions.SessionSto
 
 		h.registeredProviders[providerName] = newConfig
 
-		log.Debugf("Dumping newly registered provider: %v = %+v", providerName, providerConfig)
+		log.WithFields(log.Fields{
+			"provider": providerName,
+			"config":   redactedOAuthProvider(providerConfig),
+		}).Debug("OAuth2 provider registered")
 	}
 
 	// Start cleanup goroutine to remove expired callback states
@@ -119,7 +128,8 @@ func (h *OAuth2Handler) Shutdown() {
 type callbackState struct {
 	providerConfig *oauth2.Config
 	providerName   string
-	expiresAt      time.Time // Expiration time for this state (single-use, temporary)
+	expiresAt      time.Time
+	codeVerifier   string // PKCE code verifier (empty when PKCE disabled)
 }
 
 func assignIfEmpty(target *string, value string) {
@@ -245,63 +255,89 @@ func (h *OAuth2Handler) setOAuthCallbackCookie(w http.ResponseWriter, r *http.Re
 		Name:     name,
 		Value:    value,
 		MaxAge:   31556952, // 1 year (matches session expiry)
-		Secure:   r.TLS != nil,
+		Secure:   isCookieSecure(r, h.cfg),
 		HttpOnly: true,
 		Path:     "/",
 		SameSite: http.SameSiteLaxMode, // Allow cookie to be sent on redirects from OAuth provider
 	}
 
 	http.SetCookie(w, cookie)
-	cookieValuePreview := value
-	if len(value) > 8 {
-		cookieValuePreview = value[:8] + "..."
-	}
 	log.WithFields(log.Fields{
 		"cookieName":  name,
-		"cookieValue": cookieValuePreview,
+		"cookieValue": previewValue(value),
 		"secure":      cookie.Secure,
 		"sameSite":    cookie.SameSite,
 		"maxAge":      cookie.MaxAge,
-	}).Infof("OAuth2 cookie set")
+	}).Debug("OAuth2 cookie set")
+}
+
+func buildAuthCodeURL(provider *oauth2.Config, state, codeVerifier string, pkceEnabled bool) string {
+	if !pkceEnabled || codeVerifier == "" {
+		return provider.AuthCodeURL(state)
+	}
+
+	return provider.AuthCodeURL(state,
+		oauth2.SetAuthURLParam("code_challenge", pkceChallenge(codeVerifier)),
+		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+	)
+}
+
+func (h *OAuth2Handler) storeCallbackState(state, providerName string, provider *oauth2.Config, codeVerifier string) {
+	h.callbackStatesMutex.Lock()
+	defer h.callbackStatesMutex.Unlock()
+
+	h.callbackStates[state] = &callbackState{
+		providerConfig: provider,
+		providerName:   providerName,
+		expiresAt:      time.Now().Add(15 * time.Minute),
+		codeVerifier:   codeVerifier,
+	}
 }
 
 func (h *OAuth2Handler) HandleOAuthLogin(w http.ResponseWriter, r *http.Request) {
-	log.Infof("OAuth2 login request: %v", r.URL.Query())
+	log.WithFields(log.Fields{
+		"provider": r.URL.Query().Get("provider"),
+	}).Debug("OAuth2 login request")
 
 	state, err := RandString(16)
-
-	log.Infof("OAuth2 state: %v", state)
-
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.WithError(err).Error("OAuth2 failed to generate state")
+		writeOAuthClientError(w, http.StatusInternalServerError)
 		return
 	}
 
 	providerName := r.URL.Query().Get("provider")
 	provider, err := h.GetOAuth2Config(providerName)
-
 	if err != nil {
-		log.Errorf("Failed to get provider config: %v %v", providerName, err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		log.WithFields(log.Fields{
+			"provider": providerName,
+			"error":    err,
+		}).Error("OAuth2 failed to get provider config")
+		writeOAuthClientError(w, http.StatusBadRequest)
 		return
 	}
 
-	// Store state with expiration (15 minutes TTL for OAuth callback)
-	h.callbackStatesMutex.Lock()
-	h.callbackStates[state] = &callbackState{
-		providerConfig: provider,
-		providerName:   providerName,
-		expiresAt:      time.Now().Add(15 * time.Minute),
+	codeVerifier := ""
+	if h.cfg.OAuth2PKCEEnabled() {
+		codeVerifier, err = RandString(32)
+		if err != nil {
+			log.WithError(err).Error("OAuth2 failed to generate PKCE verifier")
+			writeOAuthClientError(w, http.StatusInternalServerError)
+			return
+		}
 	}
-	h.callbackStatesMutex.Unlock()
 
+	h.storeCallbackState(state, providerName, provider, codeVerifier)
 	h.setOAuthCallbackCookie(w, r, h.cfg.GetOAuth2SessionCookieName(), state)
 
-	loginUrl := provider.AuthCodeURL(state)
+	loginURL := buildAuthCodeURL(provider, state, codeVerifier, h.cfg.OAuth2PKCEEnabled())
+	log.WithFields(log.Fields{
+		"provider": providerName,
+		"state":    previewValue(state),
+		"pkce":     codeVerifier != "",
+	}).Debug("OAuth2 redirecting to provider")
 
-	log.Infof("OAuth2 state: %v mapped to provider %v (found: %v), now redirecting to %v", state, providerName, provider != nil, loginUrl)
-
-	http.Redirect(w, r, loginUrl, http.StatusFound)
+	http.Redirect(w, r, loginURL, http.StatusFound)
 }
 
 func (h *OAuth2Handler) validateStateMatch(queryState, cookieState string) bool {
@@ -311,11 +347,8 @@ func (h *OAuth2Handler) validateStateMatch(queryState, cookieState string) bool 
 func (h *OAuth2Handler) checkOAuthCallbackCookie(w http.ResponseWriter, r *http.Request) (*callbackState, string, bool) {
 	cookie, err := r.Cookie(h.cfg.GetOAuth2SessionCookieName())
 	if err != nil {
-		log.WithFields(log.Fields{
-			"error":      err,
-			"allCookies": r.Cookies(),
-		}).Errorf("Failed to get state cookie")
-		http.Error(w, "State not found", http.StatusBadRequest)
+		log.WithError(err).Error("OAuth2 failed to get state cookie")
+		writeOAuthClientError(w, http.StatusBadRequest)
 		return nil, "", false
 	}
 
@@ -323,53 +356,47 @@ func (h *OAuth2Handler) checkOAuthCallbackCookie(w http.ResponseWriter, r *http.
 	queryState := r.URL.Query().Get("state")
 
 	log.WithFields(log.Fields{
-		"cookieState": state,
-		"queryState":  queryState,
+		"cookieState": previewValue(state),
+		"queryState":  previewValue(queryState),
 		"statesMatch": state == queryState,
-	}).Debugf("OAuth2 callback state validation")
+	}).Debug("OAuth2 callback state validation")
 
 	if !h.validateStateMatch(queryState, state) {
-		log.WithFields(log.Fields{
-			"queryState":  queryState,
-			"cookieState": state,
-		}).Errorf("State mismatch")
-		http.Error(w, "State mismatch", http.StatusBadRequest)
+		log.Error("OAuth2 callback state mismatch")
+		writeOAuthClientError(w, http.StatusBadRequest)
 		return nil, state, false
 	}
 
-	// Check state exists and hasn't expired
 	h.callbackStatesMutex.Lock()
 	callbackState, ok := h.callbackStates[state]
 	if !ok {
 		h.callbackStatesMutex.Unlock()
 		log.WithFields(log.Fields{
-			"state":               state,
+			"state":               previewValue(state),
 			"callbackStatesCount": len(h.callbackStates),
-		}).Errorf("State not found in server")
-		http.Error(w, "State not found in server", http.StatusBadRequest)
+		}).Error("OAuth2 callback state not found in server")
+		writeOAuthClientError(w, http.StatusBadRequest)
 		return nil, state, false
 	}
 
-	// Check if state has expired
 	if time.Now().After(callbackState.expiresAt) {
 		delete(h.callbackStates, state)
 		h.callbackStatesMutex.Unlock()
 		log.WithFields(log.Fields{
-			"state":     state,
+			"state":     previewValue(state),
 			"expiresAt": callbackState.expiresAt,
-		}).Errorf("State has expired")
-		http.Error(w, "State has expired", http.StatusBadRequest)
+		}).Error("OAuth2 callback state expired")
+		writeOAuthClientError(w, http.StatusBadRequest)
 		return nil, state, false
 	}
 
-	// Delete state immediately after validation to prevent replay attacks (single-use)
 	delete(h.callbackStates, state)
 	h.callbackStatesMutex.Unlock()
 
 	log.WithFields(log.Fields{
-		"state":    state,
+		"state":    previewValue(state),
 		"provider": callbackState.providerName,
-	}).Debugf("OAuth2 callback state validated successfully and marked as used")
+	}).Debug("OAuth2 callback state validated successfully and marked as used")
 
 	return callbackState, state, true
 }
@@ -513,40 +540,30 @@ func (h *OAuth2Handler) getOrCreateHttpClient(providerName string, providerConfi
 	return client
 }
 
-func (h *OAuth2Handler) HandleOAuthCallback(w http.ResponseWriter, r *http.Request) {
-	log.Infof("OAuth2 Callback received")
+func exchangeOptions(codeVerifier string) []oauth2.AuthCodeOption {
+	if codeVerifier == "" {
+		return nil
+	}
+	return []oauth2.AuthCodeOption{oauth2.VerifierOption(codeVerifier)}
+}
 
-	registeredState, state, ok := h.checkOAuthCallbackCookie(w, r)
-
-	if !ok {
+func (h *OAuth2Handler) registerOAuthSession(sessionID, username, usergroup string) {
+	if h.sessionStorage != nil {
+		h.sessionStorage.RegisterSession(h.cfg.GetDir(), h.cfg.GetSessionFileName(), "oauth2", sessionID, username, usergroup)
 		return
 	}
+	sessions.RegisterUserSession(h.cfg, "oauth2", sessionID, username, usergroup)
+}
 
-	code := r.FormValue("code")
-
-	log.WithFields(log.Fields{
-		"state":      state,
-		"token-code": code,
-	}).Debug("OAuth2 Token Code")
-
-	providerConfig := h.cfg.OAuth2Providers[registeredState.providerName]
-
-	// Get or create cached HTTP client for this provider
+func (h *OAuth2Handler) fetchOAuthUserInfo(ctx context.Context, registeredState *callbackState, code string, providerConfig *authTypes.OAuth2Provider) (*UserInfo, error) {
 	baseClient := h.GetOrCreateHttpClient(registeredState.providerName, providerConfig)
-
-	// Use request context to respect cancellation and timeouts
-	ctx := r.Context()
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, baseClient)
 
-	tok, err := registeredState.providerConfig.Exchange(ctx, code)
-
+	tok, err := registeredState.providerConfig.Exchange(ctx, code, exchangeOptions(registeredState.codeVerifier)...)
 	if err != nil {
-		log.Errorf("Failed to exchange code: %v", err)
-		http.Error(w, "Failed to exchange code", http.StatusBadRequest)
-		return
+		return nil, err
 	}
 
-	// Create user info client with OAuth2 transport, reusing base transport
 	baseTransport := baseClient.Transport.(*http.Transport)
 	userInfoClient := &http.Client{
 		Transport: &oauth2.Transport{
@@ -556,40 +573,79 @@ func (h *OAuth2Handler) HandleOAuthCallback(w http.ResponseWriter, r *http.Reque
 		Timeout: baseClient.Timeout,
 	}
 
-	userinfo := getUserInfo(h.cfg, userInfoClient, h.cfg.OAuth2Providers[registeredState.providerName])
+	return getUserInfo(h.cfg, userInfoClient, providerConfig), nil
+}
 
-	// Append AddToGroup if configured for this provider
+func (h *OAuth2Handler) completeOAuthLogin(w http.ResponseWriter, r *http.Request, registeredState *callbackState, userinfo *UserInfo, providerConfig *authTypes.OAuth2Provider) bool {
 	usergroup := AppendAddToGroup(userinfo.Usergroup, providerConfig.AddToGroup)
 
-	// Generate a fresh cryptographically secure session ID (do not reuse the state)
 	sessionID, err := RandString(32)
 	if err != nil {
-		log.Errorf("Failed to generate session ID: %v", err)
-		http.Error(w, "Failed to generate session ID", http.StatusInternalServerError)
-		return
+		log.WithError(err).Error("OAuth2 failed to generate session ID")
+		writeOAuthClientError(w, http.StatusInternalServerError)
+		return false
 	}
 
-	// Register the user session with the new session ID (not the state)
-	// Use instance-based session storage if available, otherwise fall back to global (deprecated)
-	if h.sessionStorage != nil {
-		h.sessionStorage.RegisterSession(h.cfg.GetDir(), h.cfg.GetSessionFileName(), "oauth2", sessionID, userinfo.Username, usergroup)
-	} else {
-		sessions.RegisterUserSession(h.cfg, "oauth2", sessionID, userinfo.Username, usergroup)
-	}
-
-	// State was already deleted in checkOAuthCallbackCookie to prevent replay
+	h.registerOAuthSession(sessionID, userinfo.Username, usergroup)
 
 	log.WithFields(log.Fields{
-		"state":     state,
-		"sessionID": sessionID,
+		"sessionID": previewValue(sessionID),
 		"username":  userinfo.Username,
 		"usergroup": usergroup,
 		"provider":  registeredState.providerName,
-	}).Infof("OAuth2 authentication successful, session registered")
+	}).Info("OAuth2 authentication successful, session registered")
 
-	// Set the cookie with the new session ID (not the state)
-	// This ensures the cookie persists for the full session duration
 	h.setOAuthCallbackCookie(w, r, h.cfg.GetOAuth2SessionCookieName(), sessionID)
+	return true
+}
+
+func (h *OAuth2Handler) resolveOAuthUserinfo(w http.ResponseWriter, r *http.Request, registeredState *callbackState, code string) (*UserInfo, *authTypes.OAuth2Provider, bool) {
+	providerConfig := h.cfg.OAuth2Providers[registeredState.providerName]
+	userinfo, err := h.fetchOAuthUserInfo(r.Context(), registeredState, code, providerConfig)
+	if err != nil {
+		log.WithError(err).Error("OAuth2 failed to exchange authorization code")
+		writeOAuthClientError(w, http.StatusBadRequest)
+		return nil, nil, false
+	}
+
+	if !validateOAuthUsername(userinfo.Username) {
+		log.WithFields(log.Fields{
+			"provider": registeredState.providerName,
+		}).Error("OAuth2 userinfo returned empty username")
+		writeOAuthClientError(w, http.StatusBadRequest)
+		return nil, nil, false
+	}
+
+	return userinfo, providerConfig, true
+}
+
+func (h *OAuth2Handler) HandleOAuthCallback(w http.ResponseWriter, r *http.Request) {
+	log.Debug("OAuth2 callback received")
+
+	registeredState, state, ok := h.checkOAuthCallbackCookie(w, r)
+	if !ok {
+		return
+	}
+
+	code := r.FormValue("code")
+	if code == "" {
+		log.Error("OAuth2 callback missing authorization code")
+		writeOAuthClientError(w, http.StatusBadRequest)
+		return
+	}
+
+	log.WithFields(log.Fields{
+		"state": previewValue(state),
+	}).Debug("OAuth2 authorization code received")
+
+	userinfo, providerConfig, ok := h.resolveOAuthUserinfo(w, r, registeredState, code)
+	if !ok {
+		return
+	}
+
+	if !h.completeOAuthLogin(w, r, registeredState, userinfo, providerConfig) {
+		return
+	}
 
 	http.Redirect(w, r, "/", http.StatusFound)
 }

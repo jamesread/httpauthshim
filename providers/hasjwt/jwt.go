@@ -89,16 +89,32 @@ func parseJwtTokenWithRemoteKey(cfg *authtypes.Config, jwtToken string) (*jwt.To
 	return parseJwtTokenWithRemoteKeyCtx(context.Background(), cfg, jwtToken)
 }
 
-// buildJwtParserOptions builds parser options from JWT config
-func buildJwtParserOptions(jwtCfg authtypes.JwtConfig) []jwt.ParserOption {
+// buildJwtParserOptions builds parser options from JWT config for a verification mode.
+func buildJwtParserOptions(jwtCfg authtypes.JwtConfig, validMethods []string) []jwt.ParserOption {
 	opts := []jwt.ParserOption{
-		jwt.WithAudience(jwtCfg.Aud),
+		jwt.WithExpirationRequired(),
 		jwt.WithLeeway(5 * time.Second),
+		jwt.WithValidMethods(validMethods),
+	}
+	if jwtCfg.Aud != "" {
+		opts = append(opts, jwt.WithAudience(jwtCfg.Aud))
 	}
 	if jwtCfg.Issuer != "" {
 		opts = append(opts, jwt.WithIssuer(jwtCfg.Issuer))
 	}
 	return opts
+}
+
+func rsaValidMethods() []string {
+	return []string{"RS256", "RS384", "RS512"}
+}
+
+func hmacValidMethods() []string {
+	return []string{"HS256", "HS384", "HS512"}
+}
+
+func jwksValidMethods() []string {
+	return []string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}
 }
 
 // checkContextCancelled checks if context is cancelled and returns error if so
@@ -131,7 +147,7 @@ func initializeJwtState(ctx context.Context, cfg *authtypes.Config, state *jwtSt
 		return nil, err
 	}
 
-	return buildJwtParserOptions(cfg.Jwt), nil
+	return buildJwtParserOptions(cfg.Jwt, jwksValidMethods()), nil
 }
 
 // retryJwtParseWithRefresh retries JWT parsing after refreshing JWKS
@@ -633,24 +649,28 @@ func parseJwtTokenWithLocalKey(cfg *authtypes.Config, jwtString string) (*jwt.To
 		return nil, err
 	}
 
+	opts := buildJwtParserOptions(cfg.Jwt, rsaValidMethods())
+
 	return jwt.Parse(jwtString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("parseJwt expected token algorithm RSA but got: %v", token.Header["alg"])
 		}
 
 		return state.pubKey, nil
-	})
+	}, opts...)
 }
 
 // Hash-based Message Authentication Code
 func parseJwtTokenWithHMAC(cfg *authtypes.Config, jwtString string) (*jwt.Token, error) {
+	opts := buildJwtParserOptions(cfg.Jwt, hmacValidMethods())
+
 	return jwt.Parse(jwtString, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("parseJwt expected token algorithm HMAC but got: %v", token.Header["alg"])
 		}
 
 		return []byte(cfg.Jwt.HmacSecret), nil
-	})
+	}, opts...)
 }
 
 // getRequiredClaim fetches a required claim from JWT claims and validates it is present and non-empty.
