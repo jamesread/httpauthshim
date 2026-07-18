@@ -1,8 +1,12 @@
 package authpublic
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/jamesread/httpauthshim/sessions"
 )
 
 type Config struct {
@@ -13,10 +17,18 @@ type Config struct {
 	OAuth2Providers   map[string]*OAuth2Provider `yaml:"oauth2Providers"`
 	OAuth2RedirectURL string                     `yaml:"oauth2RedirectUrl"`
 
-	// OAuth2CookieSecure forces the Secure flag on OAuth2 session cookies.
-	// When false (default), Secure is set automatically for TLS requests and when
-	// X-Forwarded-Proto is "https" (common behind reverse proxies).
+	// OAuth2CookieSecure forces the Secure flag on auth cookies.
+	// Secure is already the default; this remains for explicit force-on.
 	OAuth2CookieSecure bool `yaml:"oauth2CookieSecure"`
+
+	// OAuth2AllowInsecureCookies allows Secure=false on cleartext HTTP.
+	// Intended for local development only. Default false (Secure cookies always).
+	OAuth2AllowInsecureCookies bool `yaml:"oauth2AllowInsecureCookies"`
+
+	// TrustForwardedHeaders allows X-Forwarded-Proto to influence Secure cookie
+	// decisions when OAuth2AllowInsecureCookies is true. Only enable behind a
+	// reverse proxy that strips client-supplied forwarded headers.
+	TrustForwardedHeaders bool `yaml:"trustForwardedHeaders"`
 
 	// OAuth2DisablePKCE disables PKCE for the authorization code flow.
 	// PKCE is enabled by default and should only be disabled for legacy providers.
@@ -39,6 +51,14 @@ type Config struct {
 	// OAuth2SessionCookieName is the name of the cookie used for OAuth2 authentication sessions
 	// Defaults to "auth-sid-oauth" if not set
 	OAuth2SessionCookieName string `yaml:"oauth2SessionCookieName"`
+
+	// SessionIdleTimeoutSeconds is the inactivity timeout for sessions (OWASP idle timeout).
+	// Default: 1800 (30 minutes). Set to -1 to disable idle timeout.
+	SessionIdleTimeoutSeconds int `yaml:"sessionIdleTimeoutSeconds"`
+
+	// SessionAbsoluteTimeoutSeconds is the maximum session lifetime from creation (OWASP absolute timeout).
+	// Default: 28800 (8 hours).
+	SessionAbsoluteTimeoutSeconds int `yaml:"sessionAbsoluteTimeoutSeconds"`
 
 	// SessionFileName is the name of the file used to store sessions
 	// Defaults to "sessions.yaml" if not set
@@ -71,10 +91,10 @@ type JwtConfig struct {
 	// HmacSecret is the HMAC secret for JWT verification
 	HmacSecret string `yaml:"hmacSecret"`
 
-	// Aud is the expected audience claim
+	// Aud is the expected audience claim (required when JWT verification is configured)
 	Aud string `yaml:"aud"`
 
-	// Issuer is the expected issuer claim
+	// Issuer is the expected issuer claim (required when JWT verification is configured)
 	Issuer string `yaml:"issuer"`
 
 	// ClaimUsername is the JWT claim key for username
@@ -99,6 +119,10 @@ type HttpHeaderConfig struct {
 	// Only enable when requests pass through a reverse proxy that strips or sets
 	// these headers; never expose this provider directly to untrusted clients.
 	Enabled bool `yaml:"enabled"`
+
+	// TrustedProxyCIDRs is required when Enabled is true. Requests must come from
+	// one of these CIDRs (matched against RemoteAddr) or trusted-header auth is ignored.
+	TrustedProxyCIDRs []string `yaml:"trustedProxyCIDRs"`
 
 	// Username is the HTTP header name containing the username
 	Username string `yaml:"username"`
@@ -241,6 +265,8 @@ type LocalUser struct {
 	Username  string `yaml:"username"`
 	Usergroup string `yaml:"usergroup"`
 	Password  string `yaml:"password"`
+	// ApiKey is an optional shared secret accepted via Authorization: Bearer <apiKey>
+	ApiKey string `yaml:"apiKey"`
 }
 
 type OAuth2Provider struct {
@@ -299,12 +325,54 @@ func (c *Config) OAuth2PKCEEnabled() bool {
 	return !c.OAuth2DisablePKCE
 }
 
+// CookieSecure reports whether auth cookies should set the Secure flag.
+// Default is true. Cleartext HTTP is only allowed when OAuth2AllowInsecureCookies
+// is set (local development). X-Forwarded-Proto is only honored when
+// TrustForwardedHeaders is also set.
+func (c *Config) CookieSecure(r *http.Request) bool {
+	if c == nil || c.OAuth2CookieSecure || !c.OAuth2AllowInsecureCookies {
+		return true
+	}
+	return cookieSecureFromRequest(r, c.TrustForwardedHeaders)
+}
+
+func cookieSecureFromRequest(r *http.Request, trustForwarded bool) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	return trustForwarded && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 // GetOAuth2SessionCookieName returns the cookie name for OAuth2 sessions, with default fallback
 func (c *Config) GetOAuth2SessionCookieName() string {
 	if c.OAuth2SessionCookieName != "" {
 		return c.OAuth2SessionCookieName
 	}
 	return "auth-sid-oauth"
+}
+
+// GetSessionIdleTimeoutSeconds returns the idle timeout in seconds.
+// Default is 30 minutes (OWASP low-risk range). A negative config value disables idle timeout.
+func (c *Config) GetSessionIdleTimeoutSeconds() int {
+	if c == nil || c.SessionIdleTimeoutSeconds == 0 {
+		return sessions.DefaultIdleTimeoutSeconds
+	}
+	if c.SessionIdleTimeoutSeconds < 0 {
+		return 0
+	}
+	return c.SessionIdleTimeoutSeconds
+}
+
+// GetSessionAbsoluteTimeoutSeconds returns the absolute session lifetime in seconds.
+// Default is 8 hours (OWASP recommended range for full-day office use).
+func (c *Config) GetSessionAbsoluteTimeoutSeconds() int {
+	if c == nil || c.SessionAbsoluteTimeoutSeconds <= 0 {
+		return sessions.DefaultAbsoluteTimeoutSeconds
+	}
+	return c.SessionAbsoluteTimeoutSeconds
 }
 
 // GetSessionFileName returns the session file name, with default fallback

@@ -12,6 +12,9 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// EnrichUserFunc is called after authentication and BuildUserAcls (including for guest users).
+type EnrichUserFunc func(user *authpublic.AuthenticatedUser, cfg *authpublic.Config)
+
 // AuthShimContext contains the configuration and session storage for authentication.
 // This is the main entry point for users of the library.
 //
@@ -29,6 +32,8 @@ type AuthShimContext struct {
 	Sessions     *sessions.SessionStorage
 	chain        []func(*authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser
 	chainMu      sync.RWMutex
+	enrichers    []EnrichUserFunc
+	enrichersMu  sync.RWMutex
 	shutdownOnce sync.Once // Ensures shutdown is only called once
 }
 
@@ -51,6 +56,11 @@ func NewAuthShimContext(cfg *authpublic.Config, sessionStorage *sessions.Session
 		chain:    make([]func(*authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser, 0),
 	}
 
+	sessionStorage.ConfigureTimeouts(
+		cfg.GetSessionIdleTimeoutSeconds(),
+		cfg.GetSessionAbsoluteTimeoutSeconds(),
+	)
+
 	// Load existing sessions from disk
 	if err := ctx.Sessions.Load(cfg.GetDir(), cfg.GetSessionFileName()); err != nil {
 		// Non-fatal error, sessions will start empty
@@ -69,21 +79,45 @@ func (ctx *AuthShimContext) AuthFromHttpReq(req *http.Request) *authpublic.Authe
 	return user
 }
 
+// AuthFromHeaders authenticates a user from HTTP headers only.
+// Useful when you have headers without a full request (e.g. gRPC metadata, proxies).
+// Cookie-based providers work if a Cookie header is present.
+// If no user is authenticated, it returns a guest user.
+func (ctx *AuthShimContext) AuthFromHeaders(headers http.Header) *authpublic.AuthenticatedUser {
+	user, _ := ctx.AuthFromHeadersWithError(headers)
+	return user
+}
+
+// AuthFromHeadersWithError authenticates a user from HTTP headers only.
+// If no user is authenticated, it returns a guest user and nil error.
+func (ctx *AuthShimContext) AuthFromHeadersWithError(headers http.Header) (*authpublic.AuthenticatedUser, error) {
+	return ctx.AuthFromHttpReqWithError(requestFromHeaders(headers))
+}
+
+// requestFromHeaders builds a minimal request so existing providers can read headers.
+func requestFromHeaders(headers http.Header) *http.Request {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
+	if err != nil {
+		req = &http.Request{Header: make(http.Header)}
+	}
+	if headers != nil {
+		req.Header = headers.Clone()
+	}
+	return req
+}
+
 // AuthFromHttpReqWithError authenticates a user from an HTTP request.
 // It runs through the authentication chain and returns an AuthenticatedUser and any error encountered.
 // If no user is authenticated, it returns a guest user and nil error.
 func (ctx *AuthShimContext) AuthFromHttpReqWithError(req *http.Request) (*authpublic.AuthenticatedUser, error) {
 	user, err := ctx.runAuthChain(req)
-
 	if err != nil {
-		return ctx.UserGuest(), err
+		user = ctx.UserGuest()
+		ctx.runAuthenticatedHooks(user)
+		return user, err
 	}
 
-	if user == nil || user.Username == "" {
-		user = ctx.UserGuest()
-	} else {
-		user.BuildUserAcls(ctx.Config)
-	}
+	user = ctx.applyAclsAndHooks(user)
 
 	path := ""
 	if req != nil {
@@ -99,6 +133,39 @@ func (ctx *AuthShimContext) AuthFromHttpReqWithError(req *http.Request) (*authpu
 	}).Debugf("Authenticated API request")
 
 	return user, nil
+}
+
+// applyAclsAndHooks resolves guest vs authenticated user, builds ACLs, then runs enrich hooks.
+func (ctx *AuthShimContext) applyAclsAndHooks(user *authpublic.AuthenticatedUser) *authpublic.AuthenticatedUser {
+	if user == nil || user.Username == "" {
+		user = ctx.UserGuest()
+	} else {
+		user.BuildUserAcls(ctx.Config)
+	}
+	ctx.runAuthenticatedHooks(user)
+	return user
+}
+
+// OnAuthenticated registers a post-auth hook called after BuildUserAcls, including for guest users.
+// Multiple hooks may be registered; they run in registration order.
+func (ctx *AuthShimContext) OnAuthenticated(fn EnrichUserFunc) {
+	if fn == nil {
+		return
+	}
+	ctx.enrichersMu.Lock()
+	defer ctx.enrichersMu.Unlock()
+	ctx.enrichers = append(ctx.enrichers, fn)
+}
+
+func (ctx *AuthShimContext) runAuthenticatedHooks(user *authpublic.AuthenticatedUser) {
+	ctx.enrichersMu.RLock()
+	hooks := make([]EnrichUserFunc, len(ctx.enrichers))
+	copy(hooks, ctx.enrichers)
+	ctx.enrichersMu.RUnlock()
+
+	for _, fn := range hooks {
+		fn(user, ctx.Config)
+	}
 }
 
 // sendResultNonBlocking sends a result to the channel without blocking if receiver moved on
@@ -354,7 +421,24 @@ func validateJwtConfig(cfg *authpublic.Config) error {
 	if cfg.Jwt.CertsURL != "" && cfg.Jwt.PubKeyPath != "" {
 		return fmt.Errorf("JWT configuration error: cannot specify both certsURL and pubKeyPath")
 	}
+	if !jwtVerificationConfigured(cfg) {
+		return nil
+	}
+	return validateJwtAudienceAndIssuer(cfg)
+}
+
+func validateJwtAudienceAndIssuer(cfg *authpublic.Config) error {
+	if cfg.Jwt.Aud == "" {
+		return fmt.Errorf("JWT configuration error: aud is required when JWT verification is configured")
+	}
+	if cfg.Jwt.Issuer == "" {
+		return fmt.Errorf("JWT configuration error: issuer is required when JWT verification is configured")
+	}
 	return nil
+}
+
+func jwtVerificationConfigured(cfg *authpublic.Config) bool {
+	return cfg.Jwt.CertsURL != "" || cfg.Jwt.PubKeyPath != "" || cfg.Jwt.HmacSecret != ""
 }
 
 // validateMtlsConfig validates mTLS configuration
@@ -376,12 +460,26 @@ func validateOAuth2Config(cfg *authpublic.Config) error {
 	return nil
 }
 
+// validateHttpHeaderConfig validates trusted HTTP header configuration
+func validateHttpHeaderConfig(cfg *authpublic.Config) error {
+	if !cfg.HttpHeader.Enabled {
+		return nil
+	}
+	if len(cfg.HttpHeader.TrustedProxyCIDRs) == 0 {
+		return fmt.Errorf("httpHeader configuration error: trustedProxyCIDRs is required when httpHeader.enabled is true")
+	}
+	return nil
+}
+
 // validateConfig validates the configuration for consistency and required fields.
 func validateConfig(cfg *authpublic.Config) error {
 	if err := validateJwtConfig(cfg); err != nil {
 		return err
 	}
 	if err := validateMtlsConfig(cfg); err != nil {
+		return err
+	}
+	if err := validateHttpHeaderConfig(cfg); err != nil {
 		return err
 	}
 	return validateOAuth2Config(cfg)

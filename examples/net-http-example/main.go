@@ -21,8 +21,9 @@ import (
 func main() {
 	// Create authentication configuration
 	cfg := &authpublic.Config{
-		// Trusted headers authentication
+		// Trusted headers authentication (must set Enabled behind a trusted proxy)
 		HttpHeader: authpublic.HttpHeaderConfig{
+			Enabled:      false,
 			Username:     "X-Username",
 			UserGroup:    "X-User-Group",
 			UserGroupSep: ",",
@@ -34,6 +35,8 @@ func main() {
 			ClaimUsername:  "sub",
 			ClaimUserGroup: "groups",
 			CookieName:     "auth-token",
+			Aud:            "httpauthshim-example",
+			Issuer:         "httpauthshim-example",
 		},
 
 		// Local users configuration
@@ -45,9 +48,13 @@ func main() {
 					Usergroup: "admin",
 					// Password: "admin123" - In production, use haslocal.CreateHash() to generate hash
 					Password: "$argon2id$v=19$m=65536,t=4,p=4$dGVzdHNhbHQ$testhash",
+					ApiKey:   "example-api-key", // Authorization: Bearer example-api-key
 				},
 			},
 		},
+
+		// Local HTTP only — never enable in production
+		OAuth2AllowInsecureCookies: true,
 
 		// OAuth2 providers (optional)
 		OAuth2Providers: map[string]*authpublic.OAuth2Provider{
@@ -91,6 +98,9 @@ func main() {
 	if cfg.Mtls.Enabled {
 		authCtx.AddProvider(hasmtls.CheckUserFromMtls)
 	}
+
+	// Authenticate local users via Authorization: Bearer <apiKey>
+	authCtx.AddProvider(haslocal.CheckUserFromApiKey)
 
 	// Set up OAuth2 handler if configured
 	var oauth2Handler *hasoauth2.OAuth2Handler
@@ -176,26 +186,17 @@ func main() {
 			return
 		}
 
-		// Generate session ID (in production, use crypto/rand)
-		sessionID := fmt.Sprintf("session-%s", username)
+		sessionID, err := haslocal.NewSessionID()
+		if err != nil {
+			http.Error(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
 
-		// Register session
 		authCtx.RegisterUserSession("local", sessionID, username, "")
-
-		// Set session cookie
-		http.SetCookie(w, &http.Cookie{
-			Name:     cfg.GetLocalSessionCookieName(),
-			Value:    sessionID,
-			Path:     "/",
-			HttpOnly: true,
-			Secure:   false, // Set to true in production with HTTPS
-		})
+		haslocal.SetSessionCookie(w, r, cfg, sessionID)
 
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{
-			"message": "Login successful",
-			"session_id": "%s"
-		}`, sessionID)
+		fmt.Fprintf(w, `{"message": "Login successful"}`)
 	})
 
 	// Public route - no authentication required

@@ -154,14 +154,32 @@ hash, err := haslocal.CreateHash("userpassword")
 
 // Verify password
 isValid := haslocal.CheckUserPassword(cfg, "username", "password")
+
+// Optional: authenticate local users via Authorization: Bearer <apiKey>
+ctx.AddProvider(haslocal.CheckUserFromApiKey)
+
+// Issue a secure local session cookie after password login
+sessionID, err := haslocal.NewSessionID()
+haslocal.SetSessionCookie(w, r, cfg, sessionID)
+ctx.RegisterUserSession("local", sessionID, username)
 ```
+
+### CSRF (cookie sessions)
+
+Cookie-based authentication (local sessions and OAuth2 session cookies) is vulnerable to CSRF on state-changing requests. This library does **not** implement CSRF tokens. Applications that use cookie sessions must add CSRF protection (e.g. double-submit cookie, synchronizer token, or framework middleware) for mutating endpoints. Prefer `SameSite=Strict` where OAuth redirects are not required; OAuth cookies use `SameSite=Lax` so provider redirects work.
 
 ### Trusted HTTP Headers
 
-Authenticate users based on trusted HTTP headers (useful for reverse proxy setups):
+Authenticate users based on trusted HTTP headers (useful for reverse proxy setups).
+Disabled by default — only enable behind a proxy that strips/sets these headers.
+When enabled, `trustedProxyCIDRs` is required and the request `RemoteAddr` must match:
 
 ```yaml
 httpHeader:
+  enabled: true
+  trustedProxyCIDRs:
+    - "10.0.0.0/8"
+    - "192.168.0.0/16"
   username: "X-Username"
   userGroup: "X-User-Group"
   userGroupSep: ","
@@ -217,6 +235,20 @@ jwt:
   header: "Authorization"
   claimUsername: "sub"
   claimUserGroup: "groups"
+  aud: "your-api"      # required when JWT verification is configured
+  issuer: "your-idp"   # required when JWT verification is configured
+
+# Separate cookies for local vs OAuth2 sessions (optional)
+localSessionCookieName: "auth-sid-local"   # default
+oauth2SessionCookieName: "auth-sid-oauth"  # default
+
+# Session lifetimes (OWASP Session Management Cheat Sheet)
+sessionIdleTimeoutSeconds: 1800      # 30 minutes idle (default); set -1 to disable
+sessionAbsoluteTimeoutSeconds: 28800 # 8 hours absolute (default)
+
+# Cookie Secure defaults to true. For local HTTP only:
+# oauth2AllowInsecureCookies: true
+# trustForwardedHeaders: true  # only behind a stripping reverse proxy
 
 localUsers:
   enabled: true
@@ -224,6 +256,7 @@ localUsers:
     - username: "admin"
       usergroup: "admin"
       password: "$argon2id$v=19$m=65536,t=4,p=1$..."
+      apiKey: "your-api-key"  # optional; Authorization: Bearer <apiKey>
 
 oauth2Providers:
   github:
@@ -277,6 +310,8 @@ ctx.AddProvider(func(authCtx *authpublic.AuthCheckingContext) *authpublic.Authen
 ## Session Management
 
 Sessions are persisted to disk in YAML format. By default, sessions are stored in `~/.config/auth/sessions.yaml`, but this can be configured via the `BaseDir` field in the config or the `AUTH_HOME` environment variable.
+
+Default lifetimes follow the OWASP Session Management Cheat Sheet for low-risk apps: **30 minutes idle** and **8 hours absolute**. Both are configurable via `sessionIdleTimeoutSeconds` and `sessionAbsoluteTimeoutSeconds`.
 
 When using `AuthShimContext`, sessions are automatically loaded on creation and managed through the context:
 

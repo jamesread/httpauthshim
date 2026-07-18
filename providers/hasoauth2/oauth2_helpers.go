@@ -36,13 +36,10 @@ func redactedOAuthProvider(provider *authTypes.OAuth2Provider) authTypes.OAuth2P
 }
 
 func isCookieSecure(r *http.Request, cfg *authTypes.Config) bool {
-	if cfg != nil && cfg.OAuth2CookieSecure {
+	if cfg == nil {
 		return true
 	}
-	if r.TLS != nil {
-		return true
-	}
-	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	return cfg.CookieSecure(r)
 }
 
 func pkceChallenge(verifier string) string {

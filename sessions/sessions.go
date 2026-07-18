@@ -15,11 +15,19 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// OWASP Session Management Cheat Sheet defaults for low-risk applications:
+// idle 15–30 minutes, absolute 4–8 hours.
+const (
+	DefaultIdleTimeoutSeconds     = 30 * 60      // 30 minutes
+	DefaultAbsoluteTimeoutSeconds = 8 * 60 * 60 // 8 hours
+)
+
 // Session management for user authentication
 type UserSession struct {
-	Username  string
-	Usergroup string // Optional, used for OAuth2 sessions
-	Expiry    int64
+	Username     string
+	Usergroup    string // Optional, used for OAuth2 sessions
+	Expiry       int64  // Absolute expiry (unix seconds since creation + absolute timeout)
+	LastActivity int64  // Last activity time for idle timeout (unix seconds)
 }
 
 type SessionProvider struct {
@@ -28,31 +36,35 @@ type SessionProvider struct {
 
 type SessionStorage struct {
 	Providers map[string]*SessionProvider
-	mu        sync.RWMutex        // Protects Providers map
-	writeMu   sync.Mutex          // Serializes file writes to prevent race conditions
-	
+	mu        sync.RWMutex // Protects Providers map
+	writeMu   sync.Mutex   // Serializes file writes to prevent race conditions
+
 	// Persistence backend for loading and saving sessions
 	persistence SessionPersistence // Pluggable persistence implementation
-	
+
+	// Timeout configuration (OWASP idle + absolute)
+	idleTimeoutSeconds     int64
+	absoluteTimeoutSeconds int64
+
 	// Async write management
-	pendingWrite   atomic.Bool    // Indicates if a write is pending
-	writeTimer     *time.Timer    // Timer for debounced writes
-	writeTimerMu   sync.Mutex     // Protects writeTimer
-	lastWriteDir   string         // Last write directory (for debounced writes)
-	lastWriteFile  string         // Last write filename (for debounced writes)
-	shutdownChan   chan struct{}  // Channel to signal shutdown
-	cleanupTicker  *time.Ticker   // Ticker for periodic cleanup
-	cleanupOnce    sync.Once      // Ensures cleanup goroutine starts only once
-	
+	pendingWrite  atomic.Bool // Indicates if a write is pending
+	writeTimer    *time.Timer // Timer for debounced writes
+	writeTimerMu  sync.Mutex  // Protects writeTimer
+	lastWriteDir  string      // Last write directory (for debounced writes)
+	lastWriteFile string      // Last write filename (for debounced writes)
+	shutdownChan  chan struct{}
+	cleanupTicker *time.Ticker
+	cleanupOnce   sync.Once
+
 	// Error handling for async writes
-	lastWriteError error           // Last error from async write
-	lastWriteErrorMu sync.RWMutex // Protects lastWriteError
-	
+	lastWriteError   error
+	lastWriteErrorMu sync.RWMutex
+
 	// Retry mechanism for failed writes
-	retryTimer     *time.Timer    // Timer for retrying failed writes
-	retryTimerMu   sync.Mutex     // Protects retryTimer
-	retryCount     int            // Number of consecutive retry attempts
-	maxRetries     int            // Maximum number of retries before giving up
+	retryTimer   *time.Timer
+	retryTimerMu sync.Mutex
+	retryCount   int
+	maxRetries   int
 }
 
 var (
@@ -62,7 +74,9 @@ var (
 
 func init() {
 	sessionStorage = &SessionStorage{
-		Providers: make(map[string]*SessionProvider),
+		Providers:              make(map[string]*SessionProvider),
+		idleTimeoutSeconds:     DefaultIdleTimeoutSeconds,
+		absoluteTimeoutSeconds: DefaultAbsoluteTimeoutSeconds,
 	}
 }
 
@@ -70,21 +84,43 @@ func init() {
 // If persistence is nil, it defaults to YAMLPersistence.
 func NewSessionStorage(persistence SessionPersistence) *SessionStorage {
 	s := &SessionStorage{
-		Providers:   make(map[string]*SessionProvider),
-		shutdownChan: make(chan struct{}),
-		maxRetries:  3, // Retry up to 3 times before giving up
+		Providers:              make(map[string]*SessionProvider),
+		shutdownChan:           make(chan struct{}),
+		maxRetries:             3,
+		idleTimeoutSeconds:     DefaultIdleTimeoutSeconds,
+		absoluteTimeoutSeconds: DefaultAbsoluteTimeoutSeconds,
 	}
-	
-	// Use provided persistence or default to YAML
+
 	if persistence == nil {
 		s.persistence = NewYAMLPersistence()
 	} else {
 		s.persistence = persistence
 	}
-	
-	// Start background cleanup goroutine
+
 	s.startCleanupGoroutine()
 	return s
+}
+
+// ConfigureTimeouts sets idle and absolute session timeouts in seconds.
+// Idle of 0 disables idle timeout. Absolute of 0 or less keeps the current absolute timeout.
+func (s *SessionStorage) ConfigureTimeouts(idleSeconds, absoluteSeconds int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idleSeconds < 0 {
+		s.idleTimeoutSeconds = 0
+	} else {
+		s.idleTimeoutSeconds = int64(idleSeconds)
+	}
+	if absoluteSeconds > 0 {
+		s.absoluteTimeoutSeconds = int64(absoluteSeconds)
+	}
+}
+
+// AbsoluteTimeoutSeconds returns the configured absolute timeout.
+func (s *SessionStorage) AbsoluteTimeoutSeconds() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int(s.absoluteTimeoutSeconds)
 }
 
 // Shutdown stops background goroutines and performs final write
@@ -113,29 +149,30 @@ func (s *SessionStorage) Shutdown(dir, filename string) error {
 
 // RegisterUserSession registers a user session (uses global storage for backward compatibility)
 // DEPRECATED: Use SessionStorage.RegisterSession() instead for instance-based storage.
-// cfg is used for file path, but we accept it as interface{} to avoid import cycle
-func RegisterUserSession(cfg interface{ GetDir() string; GetSessionFileName() string }, provider string, sid string, username string, usergroup ...string) {
-	sessionStorageMutex.Lock()
-	defer sessionStorageMutex.Unlock()
-
-	if sessionStorage.Providers[provider] == nil {
-		sessionStorage.Providers[provider] = &SessionProvider{
-			Sessions: make(map[string]*UserSession),
-		}
+func RegisterUserSession(cfg interface {
+	GetDir() string
+	GetSessionFileName() string
+}, provider string, sid string, username string, usergroup ...string) {
+	idleSeconds := DefaultIdleTimeoutSeconds
+	absoluteSeconds := DefaultAbsoluteTimeoutSeconds
+	if getter, ok := cfg.(interface{ GetSessionIdleTimeoutSeconds() int }); ok {
+		idleSeconds = getter.GetSessionIdleTimeoutSeconds()
 	}
-
-	ug := ""
-	if len(usergroup) > 0 {
-		ug = usergroup[0]
+	if getter, ok := cfg.(interface{ GetSessionAbsoluteTimeoutSeconds() int }); ok {
+		absoluteSeconds = getter.GetSessionAbsoluteTimeoutSeconds()
 	}
+	sessionStorage.ConfigureTimeouts(idleSeconds, absoluteSeconds)
+	sessionStorage.RegisterSession(cfg.GetDir(), cfg.GetSessionFileName(), provider, sid, username, usergroup...)
+}
 
-	sessionStorage.Providers[provider].Sessions[sid] = &UserSession{
-		Username:  username,
-		Usergroup: ug,
-		Expiry:    time.Now().Unix() + 31556952, // 1 year
+func newUserSession(username, usergroup string, absoluteSeconds int64) *UserSession {
+	now := time.Now().Unix()
+	return &UserSession{
+		Username:     username,
+		Usergroup:    usergroup,
+		Expiry:       now + absoluteSeconds,
+		LastActivity: now,
 	}
-
-	saveUserSessions(cfg.GetDir(), cfg.GetSessionFileName())
 }
 
 // RegisterSession registers a user session on this storage instance
@@ -154,11 +191,7 @@ func (s *SessionStorage) RegisterSession(dir, filename string, provider string, 
 		ug = usergroup[0]
 	}
 
-	s.Providers[provider].Sessions[sid] = &UserSession{
-		Username:  username,
-		Usergroup: ug,
-		Expiry:    time.Now().Unix() + 31556952, // 1 year
-	}
+	s.Providers[provider].Sessions[sid] = newUserSession(username, ug, s.absoluteTimeoutSeconds)
 
 	s.saveAsync(dir, filename)
 }
@@ -166,79 +199,52 @@ func (s *SessionStorage) RegisterSession(dir, filename string, provider string, 
 // GetUserSession retrieves a user session (uses global storage for backward compatibility)
 // DEPRECATED: Use SessionStorage.GetSession() instead for instance-based storage.
 func GetUserSession(provider string, sid string) *UserSession {
-	sessionStorageMutex.Lock()
-	defer sessionStorageMutex.Unlock()
-
-	if sessionStorage.Providers[provider] == nil {
-		return nil
-	}
-
-	session := sessionStorage.Providers[provider].Sessions[sid]
-	if session == nil {
-		return nil
-	}
-
-	if session.Expiry < time.Now().Unix() {
-		delete(sessionStorage.Providers[provider].Sessions, sid)
-		return nil
-	}
-
-	return session
+	return sessionStorage.GetSession(provider, sid)
 }
 
-// GetSession retrieves a user session from this storage instance
-// deleteExpiredSession deletes an expired session with write lock
-func (s *SessionStorage) deleteExpiredSession(provider, sid string, now int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Re-check after acquiring write lock (another goroutine might have deleted it)
-	if s.Providers[provider] != nil && s.Providers[provider].Sessions != nil {
-		if sess := s.Providers[provider].Sessions[sid]; sess != nil && sess.Expiry < now {
-			delete(s.Providers[provider].Sessions, sid)
-		}
-	}
+func (s *SessionStorage) sessionInvalidLocked(session *UserSession, now int64) bool {
+	return isSessionInvalid(session, now, s.idleTimeoutSeconds)
 }
 
 func (s *SessionStorage) GetSession(provider string, sid string) *UserSession {
-	s.mu.RLock()
+	now := time.Now().Unix()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.Providers[provider] == nil || s.Providers[provider].Sessions == nil {
-		s.mu.RUnlock()
 		return nil
 	}
 
 	session := s.Providers[provider].Sessions[sid]
 	if session == nil {
-		s.mu.RUnlock()
 		return nil
 	}
 
-	now := time.Now().Unix()
-	if session.Expiry < now {
-		s.mu.RUnlock()
-		s.deleteExpiredSession(provider, sid, now)
+	if s.sessionInvalidLocked(session, now) {
+		delete(s.Providers[provider].Sessions, sid)
 		return nil
 	}
 
-	s.mu.RUnlock()
+	session.LastActivity = now
+	s.touchPersistLocked()
 	return session
+}
+
+func (s *SessionStorage) touchPersistLocked() {
+	if s.lastWriteDir == "" || s.lastWriteFile == "" {
+		return
+	}
+	s.saveAsync(s.lastWriteDir, s.lastWriteFile)
 }
 
 // DeleteUserSession deletes a user session (uses global storage for backward compatibility)
 // DEPRECATED: Use SessionStorage.DeleteSession() instead for instance-based storage.
-func DeleteUserSession(cfg interface{ GetDir() string; GetSessionFileName() string }, provider string, sid string) {
-	sessionStorageMutex.Lock()
-	defer sessionStorageMutex.Unlock()
-
-	if sessionStorage.Providers[provider] == nil {
-		return
-	}
-
-	// Check if Sessions map exists before deleting
-	if sessionStorage.Providers[provider].Sessions != nil {
-		delete(sessionStorage.Providers[provider].Sessions, sid)
-		saveUserSessions(cfg.GetDir(), cfg.GetSessionFileName())
-	}
+func DeleteUserSession(cfg interface {
+	GetDir() string
+	GetSessionFileName() string
+}, provider string, sid string) {
+	sessionStorage.DeleteSession(cfg.GetDir(), cfg.GetSessionFileName(), provider, sid)
 }
 
 // DeleteSession deletes a user session from this storage instance
@@ -439,15 +445,13 @@ func (s *SessionStorage) ensureEmpty() {
 }
 
 var (
-	globalWriteMu sync.Mutex // Serializes global session storage writes
-	
 	// fileWriteMutexes provides per-file mutexes to coordinate writes across multiple contexts
 	// Keyed by file path (dir + filename)
-	fileWriteMutexes      = make(map[string]*sync.Mutex)
-	fileWriteMutexesMu    sync.Mutex // Protects fileWriteMutexes map
-	fileMutexLastAccess   = make(map[string]time.Time) // Track last access time for cleanup
-	maxFileMutexes        = 100                        // Maximum number of mutexes before cleanup
-	fileMutexCleanupAge   = 1 * time.Hour              // Remove mutexes not accessed in this time
+	fileWriteMutexes    = make(map[string]*sync.Mutex)
+	fileWriteMutexesMu  sync.Mutex // Protects fileWriteMutexes map
+	fileMutexLastAccess = make(map[string]time.Time) // Track last access time for cleanup
+	maxFileMutexes      = 100                        // Maximum number of mutexes before cleanup
+	fileMutexCleanupAge = 1 * time.Hour               // Remove mutexes not accessed in this time
 )
 
 // cleanupUnusedFileMutexes removes mutexes that haven't been accessed recently.
@@ -698,24 +702,6 @@ func getFileWriteMutex(dir, filename string) *sync.Mutex {
 	return mu
 }
 
-func saveUserSessions(dir, filename string) {
-	// Serialize all file writes to prevent race conditions
-	globalWriteMu.Lock()
-	defer globalWriteMu.Unlock()
-
-	// CRITICAL: Acquire read lock on sessionStorage before calling persistence.Save()
-	// persistence.Save() reads sessionStorage.Providers (via yaml.Marshal), and we must prevent
-	// concurrent modifications by RegisterUserSession/DeleteUserSession which hold write lock.
-	sessionStorageMutex.RLock()
-	defer sessionStorageMutex.RUnlock()
-
-	// Use YAML persistence for global storage (backward compatibility)
-	persistence := NewYAMLPersistence()
-	if err := persistence.Save(dir, filename, sessionStorage); err != nil {
-		logrus.WithError(err).Error("Failed to save session storage")
-	}
-}
-
 // saveAsync schedules an async write with debouncing (500ms delay)
 func (s *SessionStorage) saveAsync(dir, filename string) {
 	s.writeTimerMu.Lock()
@@ -884,7 +870,6 @@ func (s *SessionStorage) startCleanupGoroutine() {
 }
 
 // cleanupProviderSessions removes expired sessions from a single provider
-// isSessionExpired checks if a session is expired
 func isSessionExpired(session *UserSession, now int64) bool {
 	if session == nil {
 		return true
@@ -893,14 +878,25 @@ func isSessionExpired(session *UserSession, now int64) bool {
 	return session.Expiry <= now+1
 }
 
-func cleanupProviderSessions(providerName string, provider *SessionProvider, now int64) int {
+func isSessionIdle(session *UserSession, now, idleTimeoutSeconds int64) bool {
+	if idleTimeoutSeconds <= 0 || session == nil || session.LastActivity == 0 {
+		return false
+	}
+	return now-session.LastActivity > idleTimeoutSeconds
+}
+
+func isSessionInvalid(session *UserSession, now, idleTimeoutSeconds int64) bool {
+	return isSessionExpired(session, now) || isSessionIdle(session, now, idleTimeoutSeconds)
+}
+
+func cleanupProviderSessions(providerName string, provider *SessionProvider, now, idleTimeoutSeconds int64) int {
 	if provider == nil || provider.Sessions == nil {
 		return 0
 	}
 
 	cleanedCount := 0
 	for sid, session := range provider.Sessions {
-		if isSessionExpired(session, now) {
+		if isSessionInvalid(session, now, idleTimeoutSeconds) {
 			delete(provider.Sessions, sid)
 			cleanedCount++
 		}
@@ -919,12 +915,12 @@ func cleanupProvider(providers map[string]*SessionProvider, providerName string,
 }
 
 // cleanupProviderAndSessions cleans up a provider and its expired sessions
-func cleanupProviderAndSessions(providers map[string]*SessionProvider, providerName string, provider *SessionProvider, now int64) int {
+func cleanupProviderAndSessions(providers map[string]*SessionProvider, providerName string, provider *SessionProvider, now, idleTimeoutSeconds int64) int {
 	if cleanupProvider(providers, providerName, provider) {
 		return 0
 	}
 
-	count := cleanupProviderSessions(providerName, provider, now)
+	count := cleanupProviderSessions(providerName, provider, now, idleTimeoutSeconds)
 	// Remove empty providers
 	if len(provider.Sessions) == 0 {
 		delete(providers, providerName)
@@ -945,7 +941,7 @@ func (s *SessionStorage) cleanupExpiredSessions() {
 	now := time.Now().Unix()
 	cleanedCount := 0
 	for providerName, provider := range s.Providers {
-		cleanedCount += cleanupProviderAndSessions(s.Providers, providerName, provider, now)
+		cleanedCount += cleanupProviderAndSessions(s.Providers, providerName, provider, now, s.idleTimeoutSeconds)
 	}
 
 	if cleanedCount > 0 {

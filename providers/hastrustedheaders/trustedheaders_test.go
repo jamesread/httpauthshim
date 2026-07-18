@@ -17,6 +17,7 @@ func TestCheckUserFromHeadersDisabledByDefault(t *testing.T) {
 	}
 
 	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
 	req.Header.Set("X-Username", "attacker")
 	req.Header.Set("X-User-Group", "admin")
 
@@ -28,16 +29,18 @@ func TestCheckUserFromHeadersDisabledByDefault(t *testing.T) {
 	assert.Nil(t, user)
 }
 
-func TestCheckUserFromHeadersEnabled(t *testing.T) {
+func TestCheckUserFromHeadersEnabledFromTrustedProxy(t *testing.T) {
 	cfg := &authpublic.Config{
 		HttpHeader: authpublic.HttpHeaderConfig{
-			Enabled:   true,
-			Username:  "X-Username",
-			UserGroup: "X-User-Group",
+			Enabled:           true,
+			TrustedProxyCIDRs: []string{"127.0.0.1/32", "::1/128"},
+			Username:          "X-Username",
+			UserGroup:         "X-User-Group",
 		},
 	}
 
 	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "127.0.0.1:54321"
 	req.Header.Set("X-Username", "alice")
 	req.Header.Set("X-User-Group", "admin")
 
@@ -52,15 +55,38 @@ func TestCheckUserFromHeadersEnabled(t *testing.T) {
 	assert.Equal(t, "trusted-header", user.Provider)
 }
 
-func TestCheckUserFromHeadersIgnoresClientProviderHeader(t *testing.T) {
+func TestCheckUserFromHeadersRejectsUntrustedProxy(t *testing.T) {
 	cfg := &authpublic.Config{
 		HttpHeader: authpublic.HttpHeaderConfig{
-			Enabled:  true,
-			Username: "X-Username",
+			Enabled:           true,
+			TrustedProxyCIDRs: []string{"10.0.0.0/8"},
+			Username:          "X-Username",
 		},
 	}
 
 	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "203.0.113.10:1234"
+	req.Header.Set("X-Username", "alice")
+
+	user := CheckUserFromHeaders(&authpublic.AuthCheckingContext{
+		Request: req,
+		Config:  cfg,
+	})
+
+	assert.Nil(t, user)
+}
+
+func TestCheckUserFromHeadersIgnoresClientProviderHeader(t *testing.T) {
+	cfg := &authpublic.Config{
+		HttpHeader: authpublic.HttpHeaderConfig{
+			Enabled:           true,
+			TrustedProxyCIDRs: []string{"127.0.0.1/32"},
+			Username:          "X-Username",
+		},
+	}
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "127.0.0.1:9"
 	req.Header.Set("X-Username", "alice")
 	req.Header.Set("provider", "oauth2")
 

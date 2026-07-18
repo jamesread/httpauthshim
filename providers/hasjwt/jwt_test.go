@@ -70,6 +70,8 @@ func createJWTTokenWithExpiration(t *testing.T, privateKey *rsa.PrivateKey, expi
 	claims["nbf"] = time.Now().Unix() - 1000
 	claims["exp"] = time.Now().Unix() + expire
 	claims["sub"] = "test"
+	claims["aud"] = "test-audience"
+	claims["iss"] = "test-issuer"
 	claims["olivetinGroup"] = "test"
 
 	tokenStr, err := token.SignedString(privateKey)
@@ -115,6 +117,8 @@ func testJwkValidation(t *testing.T, expire int64, expectCode int) {
 	cfg.Jwt.ClaimUsername = "sub"
 	cfg.Jwt.ClaimUserGroup = "olivetinGroup"
 	cfg.Jwt.Header = "Authorization"
+	cfg.Jwt.Aud = "test-audience"
+	cfg.Jwt.Issuer = "test-issuer"
 
 	tokenStr := createJWTTokenWithExpiration(t, privateKey, expire)
 	handler := setupJWTTestHandler(t, cfg)
@@ -140,6 +144,8 @@ func createJWTTokenWithGroups(t *testing.T, privateKey *rsa.PrivateKey, groups i
 	claims["nbf"] = time.Now().Unix() - 1000
 	claims["exp"] = time.Now().Unix() + 2000
 	claims["sub"] = "test"
+	claims["aud"] = "test-audience"
+	claims["iss"] = "test-issuer"
 	claims["olivetinGroup"] = groups
 
 	tokenStr, err := token.SignedString(privateKey)
@@ -172,6 +178,8 @@ func TestJWTHeader(t *testing.T) {
 	cfg.Jwt.ClaimUsername = "sub"
 	cfg.Jwt.ClaimUserGroup = "olivetinGroup"
 	cfg.Jwt.Header = "Authorization"
+	cfg.Jwt.Aud = "test-audience"
+	cfg.Jwt.Issuer = "test-issuer"
 
 	tokenStr := createJWTTokenWithGroups(t, privateKey, []string{"test", "test2"})
 
@@ -209,6 +217,8 @@ func baseJWTConfig(publicKeyPath string) *authpublic.Config {
 	cfg.Jwt.ClaimUsername = "sub"
 	cfg.Jwt.ClaimUserGroup = "olivetinGroup"
 	cfg.Jwt.Header = "Authorization"
+	cfg.Jwt.Aud = "test-audience"
+	cfg.Jwt.Issuer = "test-issuer"
 	return cfg
 }
 
@@ -247,6 +257,7 @@ func TestJWTRejectsWrongAudience(t *testing.T) {
 	claims["sub"] = "test"
 	claims["exp"] = time.Now().Add(time.Hour).Unix()
 	claims["aud"] = "wrong-audience"
+	claims["iss"] = "test-issuer"
 	tokenStr, err := token.SignedString(privateKey)
 	assert.NoError(t, err)
 
@@ -266,6 +277,7 @@ func TestJWTAcceptsMatchingAudience(t *testing.T) {
 	claims["sub"] = "test"
 	claims["exp"] = time.Now().Add(time.Hour).Unix()
 	claims["aud"] = "expected-audience"
+	claims["iss"] = "test-issuer"
 	tokenStr, err := token.SignedString(privateKey)
 	assert.NoError(t, err)
 
@@ -285,6 +297,7 @@ func TestJWTRejectsWrongIssuer(t *testing.T) {
 	claims := token.Claims.(jwt.MapClaims)
 	claims["sub"] = "test"
 	claims["exp"] = time.Now().Add(time.Hour).Unix()
+	claims["aud"] = "test-audience"
 	claims["iss"] = "wrong-issuer"
 	tokenStr, err := token.SignedString(privateKey)
 	assert.NoError(t, err)
@@ -300,6 +313,8 @@ func TestHMACRejectsTokenWithoutExp(t *testing.T) {
 	secret := "test-hmac-secret"
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": "attacker",
+		"aud": "test-audience",
+		"iss": "test-issuer",
 	})
 	tokenStr, err := token.SignedString([]byte(secret))
 	assert.NoError(t, err)
@@ -309,6 +324,8 @@ func TestHMACRejectsTokenWithoutExp(t *testing.T) {
 			HmacSecret:    secret,
 			ClaimUsername: "sub",
 			Header:        "Authorization",
+			Aud:           "test-audience",
+			Issuer:        "test-issuer",
 		},
 	}
 
@@ -321,6 +338,8 @@ func TestHMACAcceptsValidToken(t *testing.T) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": "alice",
 		"exp": time.Now().Add(time.Hour).Unix(),
+		"aud": "test-audience",
+		"iss": "test-issuer",
 	})
 	tokenStr, err := token.SignedString([]byte(secret))
 	assert.NoError(t, err)
@@ -330,6 +349,8 @@ func TestHMACAcceptsValidToken(t *testing.T) {
 			HmacSecret:    secret,
 			ClaimUsername: "sub",
 			Header:        "Authorization",
+			Aud:           "test-audience",
+			Issuer:        "test-issuer",
 		},
 	}
 

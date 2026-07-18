@@ -27,26 +27,46 @@ func TestRedactedOAuthProviderHidesClientSecret(t *testing.T) {
 }
 
 func TestIsCookieSecure(t *testing.T) {
-	t.Run("TLS request", func(t *testing.T) {
+	t.Run("secure by default on plain HTTP", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://example.com/oauth/callback", nil)
+		assert.True(t, isCookieSecure(req, &authTypes.Config{}))
+	})
+
+	t.Run("TLS request still secure", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "https://example.com/oauth/callback", nil)
 		req.TLS = &tls.ConnectionState{}
 		assert.True(t, isCookieSecure(req, &authTypes.Config{}))
 	})
 
-	t.Run("X-Forwarded-Proto https", func(t *testing.T) {
+	t.Run("X-Forwarded-Proto ignored without trust flag", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "http://example.com/oauth/callback", nil)
 		req.Header.Set("X-Forwarded-Proto", "https")
-		assert.True(t, isCookieSecure(req, &authTypes.Config{}))
+		cfg := &authTypes.Config{OAuth2AllowInsecureCookies: true}
+		assert.False(t, isCookieSecure(req, cfg))
 	})
 
-	t.Run("plain HTTP without proxy header", func(t *testing.T) {
+	t.Run("X-Forwarded-Proto honored when trusted", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "http://example.com/oauth/callback", nil)
-		assert.False(t, isCookieSecure(req, &authTypes.Config{}))
+		req.Header.Set("X-Forwarded-Proto", "https")
+		cfg := &authTypes.Config{
+			OAuth2AllowInsecureCookies: true,
+			TrustForwardedHeaders:      true,
+		}
+		assert.True(t, isCookieSecure(req, cfg))
 	})
 
-	t.Run("config forces secure", func(t *testing.T) {
+	t.Run("allow insecure cookies on cleartext", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "http://example.com/oauth/callback", nil)
-		cfg := &authTypes.Config{OAuth2CookieSecure: true}
+		cfg := &authTypes.Config{OAuth2AllowInsecureCookies: true}
+		assert.False(t, isCookieSecure(req, cfg))
+	})
+
+	t.Run("legacy OAuth2CookieSecure forces secure", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "http://example.com/oauth/callback", nil)
+		cfg := &authTypes.Config{
+			OAuth2AllowInsecureCookies: true,
+			OAuth2CookieSecure:         true,
+		}
 		assert.True(t, isCookieSecure(req, cfg))
 	})
 }

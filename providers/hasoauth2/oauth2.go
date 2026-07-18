@@ -3,6 +3,7 @@ package hasoauth2
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -250,11 +251,13 @@ func randString(nByte int) (string, error) {
 	return base64.URLEncoding.EncodeToString(b), nil
 }
 
-func (h *OAuth2Handler) setOAuthCallbackCookie(w http.ResponseWriter, r *http.Request, name, value string) {
+const oauthStateCookieMaxAgeSeconds = 15 * 60 // matches server-side callback state expiry
+
+func (h *OAuth2Handler) setOAuthCookie(w http.ResponseWriter, r *http.Request, name, value string, maxAge int) {
 	cookie := &http.Cookie{
 		Name:     name,
 		Value:    value,
-		MaxAge:   31556952, // 1 year (matches session expiry)
+		MaxAge:   maxAge,
 		Secure:   isCookieSecure(r, h.cfg),
 		HttpOnly: true,
 		Path:     "/",
@@ -328,7 +331,7 @@ func (h *OAuth2Handler) HandleOAuthLogin(w http.ResponseWriter, r *http.Request)
 	}
 
 	h.storeCallbackState(state, providerName, provider, codeVerifier)
-	h.setOAuthCallbackCookie(w, r, h.cfg.GetOAuth2SessionCookieName(), state)
+	h.setOAuthCookie(w, r, h.cfg.GetOAuth2SessionCookieName(), state, oauthStateCookieMaxAgeSeconds)
 
 	loginURL := buildAuthCodeURL(provider, state, codeVerifier, h.cfg.OAuth2PKCEEnabled())
 	log.WithFields(log.Fields{
@@ -341,7 +344,10 @@ func (h *OAuth2Handler) HandleOAuthLogin(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *OAuth2Handler) validateStateMatch(queryState, cookieState string) bool {
-	return queryState == cookieState
+	if len(queryState) == 0 || len(queryState) != len(cookieState) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(queryState), []byte(cookieState)) == 1
 }
 
 func (h *OAuth2Handler) checkOAuthCallbackCookie(w http.ResponseWriter, r *http.Request) (*callbackState, string, bool) {
@@ -595,7 +601,7 @@ func (h *OAuth2Handler) completeOAuthLogin(w http.ResponseWriter, r *http.Reques
 		"provider":  registeredState.providerName,
 	}).Info("OAuth2 authentication successful, session registered")
 
-	h.setOAuthCallbackCookie(w, r, h.cfg.GetOAuth2SessionCookieName(), sessionID)
+	h.setOAuthCookie(w, r, h.cfg.GetOAuth2SessionCookieName(), sessionID, h.cfg.GetSessionAbsoluteTimeoutSeconds())
 	return true
 }
 
