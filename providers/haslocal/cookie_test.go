@@ -1,6 +1,7 @@
 package haslocal
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,7 +24,7 @@ func TestNewSessionID(t *testing.T) {
 func TestSetSessionCookie(t *testing.T) {
 	cfg := &authpublic.Config{}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "https://example.com/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "https://example.com/", nil)
 
 	SetSessionCookie(rec, req, cfg, "sid-value")
 
@@ -40,7 +41,7 @@ func TestSetSessionCookie(t *testing.T) {
 func TestClearSessionCookie(t *testing.T) {
 	cfg := &authpublic.Config{}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 
 	ClearSessionCookie(rec, req, cfg)
 

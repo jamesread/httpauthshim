@@ -10,35 +10,14 @@ import (
 )
 
 type Config struct {
-	Jwt JwtConfig `yaml:"jwt"`
+	// OIDCProviders is a map of OIDC provider configurations
+	OIDCProviders map[string]*OIDCProvider `yaml:"oidcProviders"`
 
-	LocalUsers LocalUsersConfig `yaml:"localUsers"`
+	OAuth2Providers map[string]*OAuth2Provider `yaml:"oauth2Providers"`
 
-	OAuth2Providers   map[string]*OAuth2Provider `yaml:"oauth2Providers"`
-	OAuth2RedirectURL string                     `yaml:"oauth2RedirectUrl"`
-
-	// OAuth2CookieSecure forces the Secure flag on auth cookies.
-	// Secure is already the default; this remains for explicit force-on.
-	OAuth2CookieSecure bool `yaml:"oauth2CookieSecure"`
-
-	// OAuth2AllowInsecureCookies allows Secure=false on cleartext HTTP.
-	// Intended for local development only. Default false (Secure cookies always).
-	OAuth2AllowInsecureCookies bool `yaml:"oauth2AllowInsecureCookies"`
-
-	// TrustForwardedHeaders allows X-Forwarded-Proto to influence Secure cookie
-	// decisions when OAuth2AllowInsecureCookies is true. Only enable behind a
-	// reverse proxy that strips client-supplied forwarded headers.
-	TrustForwardedHeaders bool `yaml:"trustForwardedHeaders"`
-
-	// OAuth2DisablePKCE disables PKCE for the authorization code flow.
-	// PKCE is enabled by default and should only be disabled for legacy providers.
-	OAuth2DisablePKCE bool `yaml:"oauth2DisablePkce"`
-
-	InsecureAllowDumpOAuth2UserData bool `yaml:"insecureAllowDumpOAuth2UserData"`
-
-	AccessControlLists []AccessControlList `yaml:"accessControlLists"`
-
-	HttpHeader HttpHeaderConfig `yaml:"httpHeader"`
+	// OAuth2SessionCookieName is the name of the cookie used for OAuth2 authentication sessions
+	// Defaults to "auth-sid-oauth" if not set
+	OAuth2SessionCookieName string `yaml:"oauth2SessionCookieName"`
 
 	// BaseDir is the base directory for storing auth-related files (sessions, etc.)
 	// If not set, defaults to ~/.config/auth/ or the value of AUTH_HOME environment variable
@@ -48,9 +27,28 @@ type Config struct {
 	// Defaults to "auth-sid-local" if not set
 	LocalSessionCookieName string `yaml:"localSessionCookieName"`
 
-	// OAuth2SessionCookieName is the name of the cookie used for OAuth2 authentication sessions
-	// Defaults to "auth-sid-oauth" if not set
-	OAuth2SessionCookieName string `yaml:"oauth2SessionCookieName"`
+	OAuth2RedirectURL string `yaml:"oauth2RedirectUrl"`
+
+	// OIDCRedirectURL is the redirect URL for OIDC callbacks
+	OIDCRedirectURL string `yaml:"oidcRedirectUrl"`
+
+	// SessionFileName is the name of the file used to store sessions
+	// Defaults to "sessions.yaml" if not set
+	SessionFileName string `yaml:"sessionFileName"`
+
+	Jwt JwtConfig `yaml:"jwt"`
+
+	// Mtls is the mTLS (Mutual TLS) configuration
+	Mtls MtlsConfig `yaml:"mtls"`
+
+	// BearerToken is the Bearer token authentication configuration
+	BearerToken BearerTokenConfig `yaml:"bearerToken"`
+
+	AccessControlLists []AccessControlList `yaml:"accessControlLists"`
+
+	HttpHeader HttpHeaderConfig `yaml:"httpHeader"`
+
+	LocalUsers LocalUsersConfig `yaml:"localUsers"`
 
 	// SessionIdleTimeoutSeconds is the inactivity timeout for sessions (OWASP idle timeout).
 	// Default: 1800 (30 minutes). Set to -1 to disable idle timeout.
@@ -60,24 +58,27 @@ type Config struct {
 	// Default: 28800 (8 hours).
 	SessionAbsoluteTimeoutSeconds int `yaml:"sessionAbsoluteTimeoutSeconds"`
 
-	// SessionFileName is the name of the file used to store sessions
-	// Defaults to "sessions.yaml" if not set
-	SessionFileName string `yaml:"sessionFileName"`
+	InsecureAllowDumpOAuth2UserData bool `yaml:"insecureAllowDumpOAuth2UserData"`
 
-	// Mtls is the mTLS (Mutual TLS) configuration
-	Mtls MtlsConfig `yaml:"mtls"`
+	// OAuth2DisablePKCE disables PKCE for the authorization code flow.
+	// PKCE is enabled by default and should only be disabled for legacy providers.
+	OAuth2DisablePKCE bool `yaml:"oauth2DisablePkce"`
 
 	// BasicAuth is the HTTP Basic authentication configuration
 	BasicAuth BasicAuthConfig `yaml:"basicAuth"`
 
-	// BearerToken is the Bearer token authentication configuration
-	BearerToken BearerTokenConfig `yaml:"bearerToken"`
+	// TrustForwardedHeaders allows X-Forwarded-Proto to influence Secure cookie
+	// decisions when OAuth2AllowInsecureCookies is true. Only enable behind a
+	// reverse proxy that strips client-supplied forwarded headers.
+	TrustForwardedHeaders bool `yaml:"trustForwardedHeaders"`
 
-	// OIDCProviders is a map of OIDC provider configurations
-	OIDCProviders map[string]*OIDCProvider `yaml:"oidcProviders"`
+	// OAuth2AllowInsecureCookies allows Secure=false on cleartext HTTP.
+	// Intended for local development only. Default false (Secure cookies always).
+	OAuth2AllowInsecureCookies bool `yaml:"oauth2AllowInsecureCookies"`
 
-	// OIDCRedirectURL is the redirect URL for OIDC callbacks
-	OIDCRedirectURL string `yaml:"oidcRedirectUrl"`
+	// OAuth2CookieSecure forces the Secure flag on auth cookies.
+	// Secure is already the default; this remains for explicit force-on.
+	OAuth2CookieSecure bool `yaml:"oauth2CookieSecure"`
 }
 
 // JwtConfig contains configuration for JWT authentication
@@ -115,15 +116,6 @@ type JwtConfig struct {
 
 // HttpHeaderConfig contains configuration for trusted HTTP header authentication
 type HttpHeaderConfig struct {
-	// Enabled enables trusted HTTP header authentication (default: false).
-	// Only enable when requests pass through a reverse proxy that strips or sets
-	// these headers; never expose this provider directly to untrusted clients.
-	Enabled bool `yaml:"enabled"`
-
-	// TrustedProxyCIDRs is required when Enabled is true. Requests must come from
-	// one of these CIDRs (matched against RemoteAddr) or trusted-header auth is ignored.
-	TrustedProxyCIDRs []string `yaml:"trustedProxyCIDRs"`
-
 	// Username is the HTTP header name containing the username
 	Username string `yaml:"username"`
 
@@ -132,41 +124,22 @@ type HttpHeaderConfig struct {
 
 	// UserGroupSep is the separator for multiple groups in the user group header
 	UserGroupSep string `yaml:"userGroupSep"`
+
+	// TrustedProxyCIDRs is required when Enabled is true. Requests must come from
+	// one of these CIDRs (matched against RemoteAddr) or trusted-header auth is ignored.
+	TrustedProxyCIDRs []string `yaml:"trustedProxyCIDRs"`
+
+	// Enabled enables trusted HTTP header authentication (default: false).
+	// Only enable when requests pass through a reverse proxy that strips or sets
+	// these headers; never expose this provider directly to untrusted clients.
+	Enabled bool `yaml:"enabled"`
 }
 
 // MtlsConfig contains configuration for mTLS (Mutual TLS) authentication
 type MtlsConfig struct {
-	// Enabled enables mTLS authentication
-	Enabled bool `yaml:"enabled"`
-
-	// RequireClientCert requires a client certificate to be present
-	// If false, mTLS will only authenticate if a certificate is present
-	RequireClientCert bool `yaml:"requireClientCert"`
-
-	// Username extraction options
-	// UsernameFromCN extracts username from Common Name (CN) field
-	UsernameFromCN bool `yaml:"usernameFromCN"`
-
-	// UsernameFromSANEmail extracts username from SAN email addresses
-	UsernameFromSANEmail bool `yaml:"usernameFromSANEmail"`
-
-	// UsernameStripEmailDomain strips the domain part from email addresses
-	// Only applies when UsernameFromSANEmail is true
-	UsernameStripEmailDomain bool `yaml:"usernameStripEmailDomain"`
-
 	// UsernameOID extracts username from a custom OID in certificate extensions
 	// Format: "1.2.840.113549.1.9.1" (example: emailAddress OID)
 	UsernameOID string `yaml:"usernameOID"`
-
-	// Group extraction options
-	// GroupFromOU extracts groups from Organizational Unit (OU) fields
-	GroupFromOU bool `yaml:"groupFromOU"`
-
-	// GroupFromSANEmail extracts groups from SAN email addresses
-	GroupFromSANEmail bool `yaml:"groupFromSANEmail"`
-
-	// GroupFromSANDNS extracts groups from SAN DNS names
-	GroupFromSANDNS bool `yaml:"groupFromSANDNS"`
 
 	// GroupSANPrefix filters SAN DNS names by prefix (only applies to GroupFromSANDNS)
 	GroupSANPrefix string `yaml:"groupSANPrefix"`
@@ -177,6 +150,32 @@ type MtlsConfig struct {
 	// GroupSeparator separates multiple groups in a single OID value
 	// Default: empty (treat as single group)
 	GroupSeparator string `yaml:"groupSeparator"`
+
+	// Enabled enables mTLS authentication
+	Enabled bool `yaml:"enabled"`
+
+	// RequireClientCert requires a client certificate to be present
+	// If false, mTLS will only authenticate if a certificate is present
+	RequireClientCert bool `yaml:"requireClientCert"`
+
+	// UsernameFromCN extracts username from Common Name (CN) field
+	UsernameFromCN bool `yaml:"usernameFromCN"`
+
+	// UsernameFromSANEmail extracts username from SAN email addresses
+	UsernameFromSANEmail bool `yaml:"usernameFromSANEmail"`
+
+	// UsernameStripEmailDomain strips the domain part from email addresses
+	// Only applies when UsernameFromSANEmail is true
+	UsernameStripEmailDomain bool `yaml:"usernameStripEmailDomain"`
+
+	// GroupFromOU extracts groups from Organizational Unit (OU) fields
+	GroupFromOU bool `yaml:"groupFromOU"`
+
+	// GroupFromSANEmail extracts groups from SAN email addresses
+	GroupFromSANEmail bool `yaml:"groupFromSANEmail"`
+
+	// GroupFromSANDNS extracts groups from SAN DNS names
+	GroupFromSANDNS bool `yaml:"groupFromSANDNS"`
 }
 
 // BasicAuthConfig contains configuration for HTTP Basic authentication
@@ -187,14 +186,14 @@ type BasicAuthConfig struct {
 
 // BearerTokenConfig contains configuration for Bearer token authentication
 type BearerTokenConfig struct {
-	// Enabled enables Bearer token authentication
-	Enabled bool `yaml:"enabled"`
-
 	// Tokens is a map of bearer tokens to user information
 	Tokens map[string]*BearerTokenUser `yaml:"tokens"`
 
 	// Header is the HTTP header name containing the Bearer token (defaults to "Authorization")
 	Header string `yaml:"header"`
+
+	// Enabled enables Bearer token authentication
+	Enabled bool `yaml:"enabled"`
 }
 
 // BearerTokenUser contains user information for a Bearer token
@@ -209,9 +208,8 @@ type BearerTokenUser struct {
 // OIDCProvider contains configuration for an OIDC provider
 // OIDC extends OAuth2 with ID tokens and standardized endpoints
 type OIDCProvider struct {
-	// IssuerURL is the OIDC issuer URL (e.g., https://accounts.google.com)
-	// If set, discovery document will be fetched from {IssuerURL}/.well-known/openid-configuration
-	IssuerURL string `yaml:"issuerUrl"`
+	// AddToGroup adds all users authenticated with this provider to a dummy usergroup with this name
+	AddToGroup string `yaml:"addToGroup"`
 
 	// ClientID is the OAuth2/OIDC client ID
 	ClientID string `yaml:"clientId"`
@@ -219,8 +217,9 @@ type OIDCProvider struct {
 	// ClientSecret is the OAuth2/OIDC client secret
 	ClientSecret string `yaml:"clientSecret"`
 
-	// Scopes are the OAuth2 scopes to request (should include "openid" for OIDC)
-	Scopes []string `yaml:"scopes"`
+	// IssuerURL is the OIDC issuer URL (e.g., https://accounts.google.com)
+	// If set, discovery document will be fetched from {IssuerURL}/.well-known/openid-configuration
+	IssuerURL string `yaml:"issuerUrl"`
 
 	// AuthUrl is the authorization URL (optional if IssuerURL is set)
 	AuthUrl string `yaml:"authUrl"`
@@ -237,28 +236,28 @@ type OIDCProvider struct {
 	// UserGroupField is the field name in userinfo/ID token for usergroup
 	UserGroupField string `yaml:"userGroupField"`
 
-	// InsecureSkipVerify skips TLS certificate verification
-	InsecureSkipVerify bool `yaml:"insecureSkipVerify"`
+	// ClaimUserGroup is the JWT claim key for user groups in ID token
+	ClaimUserGroup string `yaml:"claimUserGroup"`
 
 	// CertBundlePath is the path to a CA certificate bundle for TLS verification
 	CertBundlePath string `yaml:"certBundlePath"`
 
-	// CallbackTimeout is the timeout for callback requests in seconds
-	CallbackTimeout int `yaml:"callbackTimeout"`
-
-	// AddToGroup adds all users authenticated with this provider to a dummy usergroup with this name
-	AddToGroup string `yaml:"addToGroup"`
-
 	// ClaimUsername is the JWT claim key for username in ID token (defaults to "sub" or "preferred_username")
 	ClaimUsername string `yaml:"claimUsername"`
 
-	// ClaimUserGroup is the JWT claim key for user groups in ID token
-	ClaimUserGroup string `yaml:"claimUserGroup"`
+	// Scopes are the OAuth2 scopes to request (should include "openid" for OIDC)
+	Scopes []string `yaml:"scopes"`
+
+	// CallbackTimeout is the timeout for callback requests in seconds
+	CallbackTimeout int `yaml:"callbackTimeout"`
+
+	// InsecureSkipVerify skips TLS certificate verification
+	InsecureSkipVerify bool `yaml:"insecureSkipVerify"`
 }
 
 type LocalUsersConfig struct {
-	Enabled bool         `yaml:"enabled"`
 	Users   []*LocalUser `yaml:"users"`
+	Enabled bool         `yaml:"enabled"`
 }
 
 type LocalUser struct {
@@ -270,22 +269,23 @@ type LocalUser struct {
 }
 
 type OAuth2Provider struct {
-	Name               string   `yaml:"name"`
-	Title              string   `yaml:"title"`
-	Icon               string   `yaml:"icon"`
-	UsernameField      string   `yaml:"usernameField"`
-	UserGroupField     string   `yaml:"userGroupField"`
-	WhoamiUrl          string   `yaml:"whoamiUrl"`
-	TokenUrl           string   `yaml:"tokenUrl"`
-	AuthUrl            string   `yaml:"authUrl"`
-	ClientID           string   `yaml:"clientId"`
-	ClientSecret       string   `yaml:"clientSecret"`
-	Scopes             []string `yaml:"scopes"`
-	InsecureSkipVerify bool     `yaml:"insecureSkipVerify"`
-	RedirectURL        string   `yaml:"redirectUrl"`
+	ClientID       string `yaml:"clientId"`
+	ClientSecret   string `yaml:"clientSecret"`
+	Icon           string `yaml:"icon"`
+	UsernameField  string `yaml:"usernameField"`
+	UserGroupField string `yaml:"userGroupField"`
+	WhoamiUrl      string `yaml:"whoamiUrl"`
+	Title          string `yaml:"title"`
+	TokenUrl       string `yaml:"tokenUrl"`
+	Name           string `yaml:"name"`
+	AuthUrl        string `yaml:"authUrl"`
+	// AddToGroup adds all users authenticated with this provider to a dummy usergroup with this name
+	AddToGroup         string   `yaml:"addToGroup"`
 	CertBundlePath     string   `yaml:"certBundlePath"`
+	RedirectURL        string   `yaml:"redirectUrl"`
+	Scopes             []string `yaml:"scopes"`
 	CallbackTimeout    int      `yaml:"callbackTimeout"`
-	AddToGroup         string   `yaml:"addToGroup"` // Adds all users authenticated with this provider to a dummy usergroup with this name
+	InsecureSkipVerify bool     `yaml:"insecureSkipVerify"`
 }
 
 // GetDir returns the base directory for storing auth-related files.

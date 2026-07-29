@@ -1,6 +1,7 @@
 package hastrustedheaders
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
 
@@ -16,7 +17,7 @@ func TestCheckUserFromHeadersDisabledByDefault(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.RemoteAddr = "127.0.0.1:1234"
 	req.Header.Set("X-Username", "attacker")
 	req.Header.Set("X-User-Group", "admin")
@@ -39,7 +40,7 @@ func TestCheckUserFromHeadersEnabledFromTrustedProxy(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.RemoteAddr = "127.0.0.1:54321"
 	req.Header.Set("X-Username", "alice")
 	req.Header.Set("X-User-Group", "admin")
@@ -64,7 +65,7 @@ func TestCheckUserFromHeadersRejectsUntrustedProxy(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.RemoteAddr = "203.0.113.10:1234"
 	req.Header.Set("X-Username", "alice")
 
@@ -85,7 +86,7 @@ func TestCheckUserFromHeadersIgnoresClientProviderHeader(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.RemoteAddr = "127.0.0.1:9"
 	req.Header.Set("X-Username", "alice")
 	req.Header.Set("provider", "oauth2")

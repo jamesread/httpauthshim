@@ -1,6 +1,7 @@
 package hasbearer
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
 
@@ -15,7 +16,7 @@ func TestCheckUserFromBearerToken_Disabled(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer test-token")
 
 	authCtx := &authpublic.AuthCheckingContext{
@@ -40,7 +41,7 @@ func TestCheckUserFromBearerToken_NoHeader(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 
 	authCtx := &authpublic.AuthCheckingContext{
 		Request: req,
@@ -64,7 +65,7 @@ func TestCheckUserFromBearerToken_InvalidPrefix(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Basic dGVzdDp0ZXN0")
 
 	authCtx := &authpublic.AuthCheckingContext{
@@ -89,7 +90,7 @@ func TestCheckUserFromBearerToken_ValidToken(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer valid-token-123")
 
 	authCtx := &authpublic.AuthCheckingContext{
@@ -117,7 +118,7 @@ func TestCheckUserFromBearerToken_InvalidToken(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer invalid-token")
 
 	authCtx := &authpublic.AuthCheckingContext{
@@ -143,7 +144,7 @@ func TestCheckUserFromBearerToken_CustomHeader(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("X-Auth-Token", "Bearer custom-token")
 
 	authCtx := &authpublic.AuthCheckingContext{
@@ -171,7 +172,7 @@ func TestCheckUserFromBearerToken_MultipleGroups(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer multi-group-token")
 
 	authCtx := &authpublic.AuthCheckingContext{
@@ -198,7 +199,7 @@ func TestCheckUserFromBearerToken_EmptyUsergroup(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer no-group-token")
 
 	authCtx := &authpublic.AuthCheckingContext{
@@ -225,7 +226,7 @@ func TestCheckUserFromBearerToken_EmptyToken(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer ")
 
 	authCtx := &authpublic.AuthCheckingContext{
@@ -250,7 +251,7 @@ func TestCheckUserFromBearerToken_TokenWithSpaces(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer token with spaces")
 
 	authCtx := &authpublic.AuthCheckingContext{

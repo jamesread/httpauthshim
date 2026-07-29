@@ -1,0 +1,116 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+issues:
+  max-same-issues: 0
+  max-issues-per-linter: 0
+
+linters:
+  default: none
+  enable:
+    - bidichk
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errcheck
+    - errorlint
+    - gocritic
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+#    - modernize
+    - nilerr
+    - noctx
+#    - promlinter
+    - staticcheck
+#    - testifylint
+    - thelper
+    - unconvert
+#    - unparam
+    - unused
+    - usestdlibvars
+  settings:
+    gocyclo:
+      min-complexity: 5
+    gosec:
+      # Full gosec rule set (G101–G6xx), including Slowloris checks G112/G114.
+      enable-all-rules: true
+    govet:
+      enable-all: true
+  exclusions:
+    paths:
+      - gen
+    rules:
+      # Noise / fixtures in tests and local tooling.
+      - path: _test\.go
+        linters:
+          - gosec
+      - path: _test\.go
+        text: "fieldalignment:"
+        linters:
+          - govet
+      - path: scripts/
+        linters:
+          - gosec
+      # Local config-tool CLI: operator-supplied path and 0644 config backups.
+      - path: cmd/config-tool/main\.go
+        text: "G304:"
+        linters:
+          - gosec
+      - path: cmd/config-tool/main\.go
+        text: "G306:"
+        linters:
+          - gosec
+      - path: cmd/config-tool/main\.go
+        text: "G703:"
+        linters:
+          - gosec
+
+      # Secure is set dynamically from CookieSecure / isCookieSecure; gosec wants a literal true.
+      - path: providers/haslocal/cookie\.go
+        text: "G124:"
+        linters:
+          - gosec
+      - path: providers/hasoauth2/oauth2\.go
+        text: "G124:"
+        linters:
+          - gosec
+
+      # Operator-configured filesystem paths (JWT pubkey, OAuth cert bundle, session backups).
+      - path: providers/hasjwt/jwt\.go
+        text: "G304:"
+        linters:
+          - gosec
+      - path: providers/hasoauth2/oauth2\.go
+        text: "G304:"
+        linters:
+          - gosec
+      - path: sessions/persistence\.go
+        text: "G304:"
+        linters:
+          - gosec
+      - path: sessions/persistence\.go
+        text: "G703:"
+        linters:
+          - gosec
+      - path: sessions/sessions\.go
+        text: "G304:"
+        linters:
+          - gosec
+
+      # InsecureSkipVerify is an explicit OAuth2 provider config option.
+      - path: providers/hasoauth2/oauth2\.go
+        text: "G402:"
+        linters:
+          - gosec
+
+      # Redirect target is oauth2.Config.AuthCodeURL from provider config, not raw user input.
+      - path: providers/hasoauth2/oauth2\.go
+        text: "G710:"
+        linters:
+          - gosec

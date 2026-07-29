@@ -35,6 +35,7 @@ func CheckUserFromLocalSession(context *types.AuthCheckingContext) *types.Authen
 	if context.Sessions != nil {
 		sess = context.Sessions.GetSession("local", sid)
 	} else {
+		//nolint:staticcheck // SA1019: intentional fallback to global session storage
 		sess = sessions.GetUserSession("local", sid)
 	}
 	if sess == nil {

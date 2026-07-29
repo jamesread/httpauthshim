@@ -135,7 +135,6 @@ func resetJwksState(state *jwtState) {
 	state.jwksInitMu.Unlock()
 }
 
-
 // initializeJwtState initializes JWT state and returns parser options
 func initializeJwtState(ctx context.Context, cfg *authtypes.Config, state *jwtState) ([]jwt.ParserOption, error) {
 	if err := initJwksCtx(ctx, cfg, state); err != nil {
@@ -158,7 +157,7 @@ func retryJwtParseWithRefresh(ctx context.Context, cfg *authtypes.Config, state 
 
 	resetJwksState(state)
 	if retryErr := initJwksCtx(ctx, cfg, state); retryErr != nil {
-		return nil, nil
+		return nil, retryErr
 	}
 	// Retry parsing with refreshed keys
 	return jwt.Parse(jwtToken, state.jwksVerifier.Keyfunc, opts...)
@@ -196,34 +195,29 @@ func parseJwtTokenWithRemoteKeyCtx(ctx context.Context, cfg *authtypes.Config, j
 
 // jwtState stores JWT verification state for a specific configuration
 type jwtState struct {
-	// For remote JWKS
-	jwksVerifier keyfunc.Keyfunc
-	jwksInitErr  error
-	jwksInitMu   sync.Mutex // Protects JWKS initialization (allows retry on failure)
-	jwksInitDone bool        // Tracks if initialization was attempted
-
-	// For local public key
-	pubKeyBytes   []byte
-	pubKey        *rsa.PublicKey
-	loadedKeyPath string
-	loadedKeyMtime time.Time // Track file modification time for change detection
-	localKeyMutex sync.RWMutex
-	localKeyErr   error
-	
-	// Track last access time for cleanup
-	lastAccess time.Time
-	accessMu  sync.RWMutex
+	loadedKeyMtime time.Time
+	lastAccess     time.Time
+	jwksVerifier   keyfunc.Keyfunc
+	jwksInitErr    error
+	localKeyErr    error
+	pubKey         *rsa.PublicKey
+	loadedKeyPath  string
+	pubKeyBytes    []byte
+	localKeyMutex  sync.RWMutex
+	accessMu       sync.RWMutex
+	jwksInitMu     sync.Mutex
+	jwksInitDone   bool
 }
 
 var (
 	// jwtStateMap stores JWT state per config (keyed by hash of JWT config fields)
 	// This avoids memory leaks from pointer addresses and prevents wrong state reuse
-	jwtStateMap      = make(map[string]*jwtState)
-	jwtStateMapMu    sync.RWMutex
+	jwtStateMap        = make(map[string]*jwtState)
+	jwtStateMapMu      sync.RWMutex
 	maxJwtStateMapSize = 100 // Maximum number of JWT states to prevent unbounded growth
-	
+
 	// Cleanup management
-	cleanupTicker  *time.Ticker
+	cleanupTicker   *time.Ticker
 	cleanupTickerMu sync.Mutex
 	cleanupStarted  bool
 )
@@ -258,7 +252,8 @@ func getJwtState(cfg *authtypes.Config) *jwtState {
 	defer jwtStateMapMu.Unlock()
 
 	// Double-check after acquiring write lock
-	if state, exists := jwtStateMap[key]; exists {
+	state, exists = jwtStateMap[key]
+	if exists {
 		state.accessMu.Lock()
 		state.lastAccess = time.Now()
 		state.accessMu.Unlock()
@@ -303,14 +298,14 @@ func cleanupJwtStateResources(state *jwtState) {
 // IMPORTANT: Caller must hold jwtStateMapMu.Lock() - this function does not acquire the lock.
 // collectJwtStateEntries collects all JWT state entries with their access times
 func collectJwtStateEntries() []struct {
-	key       string
 	lastAccess time.Time
+	key        string
 } {
 	type stateEntry struct {
-		key        string
 		lastAccess time.Time
+		key        string
 	}
-	
+
 	entries := make([]stateEntry, 0, len(jwtStateMap))
 	for key, state := range jwtStateMap {
 		state.accessMu.RLock()
@@ -318,16 +313,16 @@ func collectJwtStateEntries() []struct {
 		state.accessMu.RUnlock()
 		entries = append(entries, stateEntry{key: key, lastAccess: lastAccess})
 	}
-	
+
 	// Sort by last access time (oldest first)
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].lastAccess.Before(entries[j].lastAccess)
 	})
-	
+
 	// Convert to return type
 	result := make([]struct {
-		key        string
 		lastAccess time.Time
+		key        string
 	}, len(entries))
 	for i, e := range entries {
 		result[i].key = e.key
@@ -338,14 +333,14 @@ func collectJwtStateEntries() []struct {
 
 // removeOldestJwtStates removes the oldest JWT states up to target size
 func removeOldestJwtStates(entries []struct {
-	key        string
 	lastAccess time.Time
+	key        string
 }, targetSize int) {
 	toRemove := len(jwtStateMap) - targetSize
 	if toRemove <= 0 {
 		return
 	}
-	
+
 	for i := 0; i < toRemove && i < len(entries); i++ {
 		key := entries[i].key
 		if state, exists := jwtStateMap[key]; exists {
@@ -368,7 +363,7 @@ func cleanupUnusedJwtStatesLocked(maxAge time.Duration) {
 		state.accessMu.RLock()
 		lastAccess := state.lastAccess
 		state.accessMu.RUnlock()
-		
+
 		if lastAccess.Before(cutoff) {
 			cleanupJwtStateResources(state)
 			delete(jwtStateMap, key)
@@ -388,7 +383,7 @@ func CleanupUnusedJwtStates(maxAge time.Duration) {
 		state.accessMu.RLock()
 		lastAccess := state.lastAccess
 		state.accessMu.RUnlock()
-		
+
 		if lastAccess.Before(cutoff) {
 			cleanupJwtStateResources(state)
 			delete(jwtStateMap, key)
@@ -567,28 +562,28 @@ func loadPublicKeyFromFile(keyPath string, state *jwtState) error {
 	state.loadedKeyPath = keyPath
 	state.loadedKeyMtime = mtime
 	state.localKeyErr = nil
-	
+
 	log.WithFields(log.Fields{
 		"keyPath": keyPath,
 		"mtime":   mtime,
 	}).Debugf("JWT public key loaded from file")
-	
+
 	return nil
 }
 
 // readFileWithTimeout reads a file with a timeout to prevent hanging on slow filesystems
 func readFileWithTimeout(filePath string, timeout time.Duration) ([]byte, error) {
 	type result struct {
-		data []byte
 		err  error
+		data []byte
 	}
-	
+
 	resultChan := make(chan result, 1)
 	go func() {
 		data, err := os.ReadFile(filePath)
 		resultChan <- result{data: data, err: err}
 	}()
-	
+
 	select {
 	case res := <-resultChan:
 		return res.data, res.err
@@ -601,7 +596,7 @@ func isKeyLoadedForPath(keyPath string, state *jwtState) bool {
 	if state.pubKeyBytes == nil || state.loadedKeyPath != keyPath {
 		return false
 	}
-	
+
 	// Check if file modification time has changed
 	if stat, err := os.Stat(keyPath); err == nil {
 		if !stat.ModTime().Equal(state.loadedKeyMtime) {
@@ -609,7 +604,7 @@ func isKeyLoadedForPath(keyPath string, state *jwtState) bool {
 			return false
 		}
 	}
-	
+
 	return true
 }
 

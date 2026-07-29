@@ -1,6 +1,7 @@
 package hasmtls
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -17,6 +18,7 @@ import (
 )
 
 func createTestCert(t *testing.T, cn string, email []string, dns []string, ou []string) *x509.Certificate {
+	t.Helper()
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("Failed to generate key: %v", err)
@@ -56,7 +58,7 @@ func TestCheckUserFromMtls_Disabled(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	context := &authpublic.AuthCheckingContext{
 		Request: req,
 		Config:  cfg,
@@ -73,7 +75,7 @@ func TestCheckUserFromMtls_NoTLS(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	context := &authpublic.AuthCheckingContext{
 		Request: req,
 		Config:  cfg,
@@ -93,7 +95,7 @@ func TestCheckUserFromMtls_FromCN(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.TLS = &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{cert},
 	}
@@ -119,7 +121,7 @@ func TestCheckUserFromMtls_FromSANEmail(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.TLS = &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{cert},
 	}
@@ -145,7 +147,7 @@ func TestCheckUserFromMtls_FromSANEmail_StripDomain(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.TLS = &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{cert},
 	}
@@ -171,7 +173,7 @@ func TestCheckUserFromMtls_GroupsFromOU(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.TLS = &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{cert},
 	}
@@ -198,7 +200,7 @@ func TestCheckUserFromMtls_GroupsFromSANDNS(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.TLS = &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{cert},
 	}
@@ -224,7 +226,7 @@ func TestCheckUserFromMtls_RequireClientCert(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	// No TLS connection state
 	context := &authpublic.AuthCheckingContext{
 		Request: req,

@@ -206,7 +206,7 @@ func (p *YAMLPersistence) Save(dir, filename string, storage *SessionStorage) (e
 		}
 	}()
 
-	if err := ensureDirectoryWritable(dir); err != nil {
+	if err = ensureDirectoryWritable(dir); err != nil {
 		return err
 	}
 

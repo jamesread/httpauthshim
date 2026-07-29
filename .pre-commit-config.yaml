@@ -21,10 +21,16 @@ repos:
       - id: go-vet
         exclude: ^examples/
       - id: go-mod-tidy
-      - id: golangci-lint
 
   - repo: local
     hooks:
+      - id: make-golangci
+        name: Run golangci-lint
+        entry: make golangci
+        language: system
+        pass_filenames: false
+        always_run: true
+
       - id: make-test
         name: Run tests
         entry: make test

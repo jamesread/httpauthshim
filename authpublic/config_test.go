@@ -1,6 +1,7 @@
 package authpublic
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
 
@@ -38,13 +39,13 @@ func TestGetSessionIdleTimeoutDisabled(t *testing.T) {
 }
 
 func TestCookieSecureDefaults(t *testing.T) {
-	req := httptest.NewRequest("GET", "http://example.com", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://example.com", nil)
 	assert.True(t, (&Config{}).CookieSecure(req))
 	assert.True(t, (*Config)(nil).CookieSecure(req))
 }
 
 func TestCookieSecureAllowInsecure(t *testing.T) {
-	req := httptest.NewRequest("GET", "http://example.com", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://example.com", nil)
 	cfg := &Config{OAuth2AllowInsecureCookies: true}
 	assert.False(t, cfg.CookieSecure(req))
 

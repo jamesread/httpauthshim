@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -36,7 +37,7 @@ func TestOnAuthenticated_Guest(t *testing.T) {
 		user.Acls = append(user.Acls, "enriched-guest")
 	})
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	user := ctx.AuthFromHttpReq(req)
 
 	assert.True(t, user.IsGuest())
@@ -66,7 +67,7 @@ func TestOnAuthenticated_AfterBuildUserAcls(t *testing.T) {
 		user.Acls = append(user.Acls, "custom")
 	})
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	user := ctx.AuthFromHttpReq(req)
 
 	assert.Equal(t, "alice", user.Username)
@@ -87,7 +88,7 @@ func TestOnAuthenticated_MultipleHooks(t *testing.T) {
 		user.Acls = append(user.Acls, "second")
 	})
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	user := ctx.AuthFromHttpReq(req)
 
 	assert.Equal(t, []string{"first", "second"}, order)
@@ -98,7 +99,7 @@ func TestOnAuthenticated_NilIgnored(t *testing.T) {
 	ctx := newTestAuthContext(t, nil)
 	assert.NotPanics(t, func() {
 		ctx.OnAuthenticated(nil)
-		_ = ctx.AuthFromHttpReq(httptest.NewRequest("GET", "/", nil))
+		_ = ctx.AuthFromHttpReq(httptest.NewRequestWithContext(context.Background(), "GET", "/", nil))
 	})
 }
 

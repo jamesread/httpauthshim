@@ -24,24 +24,18 @@ import (
 
 type OAuth2Handler struct {
 	cfg                 *authTypes.Config
-	sessionStorage      *sessions.SessionStorage  // Instance-based session storage
-	callbackStates      map[string]*callbackState // Temporary state for OAuth callback flow
-	callbackStatesMutex sync.RWMutex              // Protects callbackStates map
+	sessionStorage      *sessions.SessionStorage
+	callbackStates      map[string]*callbackState
+	certBundleMtimes    map[string]time.Time
 	registeredProviders map[string]*oauth2.Config
-	shutdownChan        chan struct{} // Channel to signal shutdown
-	shutdownOnce        sync.Once     // Ensures shutdown is called only once
-
-	// SessionStorage returns the session storage (exported for reuse by OIDC)
-	SessionStorage func() *sessions.SessionStorage
-
-	// Cached HTTP clients per provider (keyed by provider name)
-	httpClients   map[string]*http.Client
-	httpClientsMu sync.RWMutex // Protects httpClients map
-
-	// Cached cert bundles per provider (keyed by cert bundle path)
-	certBundles      map[string]*x509.CertPool
-	certBundlesMu    sync.RWMutex         // Protects certBundles map
-	certBundleMtimes map[string]time.Time // Track file modification times for cache invalidation
+	shutdownChan        chan struct{}
+	certBundles         map[string]*x509.CertPool
+	SessionStorage      func() *sessions.SessionStorage
+	httpClients         map[string]*http.Client
+	httpClientsMu       sync.RWMutex
+	certBundlesMu       sync.RWMutex
+	callbackStatesMutex sync.RWMutex
+	shutdownOnce        sync.Once
 }
 
 // NewOAuth2Handler creates a new OAuth2 handler with instance-based session storage.
@@ -558,6 +552,7 @@ func (h *OAuth2Handler) registerOAuthSession(sessionID, username, usergroup stri
 		h.sessionStorage.RegisterSession(h.cfg.GetDir(), h.cfg.GetSessionFileName(), "oauth2", sessionID, username, usergroup)
 		return
 	}
+	//nolint:staticcheck // SA1019: intentional fallback to global session storage
 	sessions.RegisterUserSession(h.cfg, "oauth2", sessionID, username, usergroup)
 }
 
@@ -673,19 +668,23 @@ func GetUserInfo(cfg *authTypes.Config, client *http.Client, provider *authTypes
 func getUserInfo(cfg *authTypes.Config, client *http.Client, provider *authTypes.OAuth2Provider) *UserInfo {
 	ret := &UserInfo{}
 
-	res, err := client.Get(provider.WhoamiUrl)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, provider.WhoamiUrl, nil)
+	if err != nil {
+		log.Errorf("Failed to create user data request: %v", err)
+		return ret
+	}
 
+	res, err := client.Do(req)
 	if err != nil {
 		log.Errorf("Failed to get user data: %v", err)
 		return ret
 	}
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
 		log.Errorf("Failed to get user data: %v", res.StatusCode)
 		return ret
 	}
-
-	defer func() { _ = res.Body.Close() }()
 
 	contents, err := io.ReadAll(res.Body)
 
@@ -700,7 +699,7 @@ func getUserInfo(cfg *authTypes.Config, client *http.Client, provider *authTypes
 		log.Debugf("OAuth2 User Data: %v+", string(contents))
 	}
 
-	err = json.Unmarshal([]byte(contents), &userData)
+	err = json.Unmarshal(contents, &userData)
 
 	if err != nil {
 		log.Errorf("Failed to unmarshal user data: %v", err)
@@ -821,6 +820,7 @@ func (h *OAuth2Handler) createAuthenticatedUserFromSession(authCtx *authTypes.Au
 	if authCtx.Sessions != nil {
 		sess = authCtx.Sessions.GetSession("oauth2", cookieValue)
 	} else {
+		//nolint:staticcheck // SA1019: intentional fallback to global session storage
 		sess = sessions.GetUserSession("oauth2", cookieValue)
 	}
 	if sess == nil {

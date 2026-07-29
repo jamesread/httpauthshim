@@ -1,6 +1,7 @@
 package hasjwt
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -19,6 +20,7 @@ import (
 )
 
 func generateRSAKeyPair(t *testing.T) (*rsa.PrivateKey, []byte) {
+	t.Helper()
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("failed to generate RSA key: %v", err)
@@ -41,6 +43,7 @@ func generateRSAKeyPair(t *testing.T) (*rsa.PrivateKey, []byte) {
 }
 
 func createKeys(t *testing.T) (*rsa.PrivateKey, string) {
+	t.Helper()
 	tmpFile, err := os.CreateTemp(os.TempDir(), "olivetin-jwt-")
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
@@ -65,6 +68,7 @@ func newMux() *http.ServeMux {
 }
 
 func createJWTTokenWithExpiration(t *testing.T, privateKey *rsa.PrivateKey, expire int64) string {
+	t.Helper()
 	token := jwt.New(jwt.SigningMethodRS256)
 	claims := token.Claims.(jwt.MapClaims)
 	claims["nbf"] = time.Now().Unix() - 1000
@@ -82,6 +86,7 @@ func createJWTTokenWithExpiration(t *testing.T, privateKey *rsa.PrivateKey, expi
 }
 
 func setupJWTTestHandler(t *testing.T, cfg *authpublic.Config) http.Handler {
+	t.Helper()
 	mux := newMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		context := &authpublic.AuthCheckingContext{
@@ -91,7 +96,7 @@ func setupJWTTestHandler(t *testing.T, cfg *authpublic.Config) http.Handler {
 		user := CheckUserFromJwtHeader(context)
 
 		if user == nil {
-			w.WriteHeader(403)
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 
@@ -102,6 +107,7 @@ func setupJWTTestHandler(t *testing.T, cfg *authpublic.Config) http.Handler {
 }
 
 func verifyJWTResponse(t *testing.T, res *http.Response, expectCode int) {
+	t.Helper()
 	defer func() { _ = res.Body.Close() }()
 	assert.Equal(t, expectCode, res.StatusCode)
 	body, _ := io.ReadAll(res.Body)
@@ -109,6 +115,7 @@ func verifyJWTResponse(t *testing.T, res *http.Response, expectCode int) {
 }
 
 func testJwkValidation(t *testing.T, expire int64, expectCode int) {
+	t.Helper()
 	privateKey, publicKeyPath := createKeys(t)
 	defer func() { _ = os.Remove(publicKeyPath) }()
 
@@ -127,6 +134,7 @@ func testJwkValidation(t *testing.T, expire int64, expectCode int) {
 	defer srv.Close()
 
 	res := makeJWTRequest(t, srv, tokenStr)
+	defer func() { _ = res.Body.Close() }()
 	verifyJWTResponse(t, res, expectCode)
 }
 
@@ -139,6 +147,7 @@ func TestJWTSignatureVerificationFails(t *testing.T) {
 }
 
 func createJWTTokenWithGroups(t *testing.T, privateKey *rsa.PrivateKey, groups interface{}) string {
+	t.Helper()
 	token := jwt.New(jwt.SigningMethodRS256)
 	claims := token.Claims.(jwt.MapClaims)
 	claims["nbf"] = time.Now().Unix() - 1000
@@ -156,7 +165,8 @@ func createJWTTokenWithGroups(t *testing.T, privateKey *rsa.PrivateKey, groups i
 }
 
 func makeJWTRequest(t *testing.T, srv *httptest.Server, tokenStr string) *http.Response {
-	req, err := http.NewRequest("GET", srv.URL, nil)
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -192,7 +202,7 @@ func TestJWTHeader(t *testing.T) {
 		user := CheckUserFromJwtHeader(context)
 
 		if user == nil {
-			w.WriteHeader(403)
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 
@@ -225,7 +235,7 @@ func baseJWTConfig(publicKeyPath string) *authpublic.Config {
 func checkUserFromBearerToken(t *testing.T, cfg *authpublic.Config, tokenStr string) *authpublic.AuthenticatedUser {
 	t.Helper()
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer "+tokenStr)
 
 	return CheckUserFromJwtHeader(&authpublic.AuthCheckingContext{

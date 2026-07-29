@@ -15,9 +15,10 @@ var (
 )
 
 // AddProvider adds a provider to the global auth chain.
-// DEPRECATED: Use AuthShimContext.AddProvider instead for per-context chains.
 // This function is kept for backward compatibility but modifies a global chain
 // that is shared across all contexts, which may cause unexpected behavior.
+//
+// Deprecated: Use AuthShimContext.AddProvider instead for per-context chains.
 func AddProvider(check func(*types.AuthCheckingContext) *types.AuthenticatedUser) {
 	authChainMu.Lock()
 	defer authChainMu.Unlock()

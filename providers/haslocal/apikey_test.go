@@ -1,6 +1,7 @@
 package haslocal
 
 import (
+	"context"
 	"net/http/httptest"
 	"testing"
 
@@ -27,7 +28,7 @@ func TestCheckUserFromApiKey_Disabled(t *testing.T) {
 		},
 	}
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer secret-key")
 
 	user := CheckUserFromApiKey(&authpublic.AuthCheckingContext{Request: req, Config: cfg})
@@ -41,7 +42,7 @@ func TestCheckUserFromApiKey_ValidKey(t *testing.T) {
 		ApiKey:    "secret-key-123",
 	})
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer secret-key-123")
 
 	user := CheckUserFromApiKey(&authpublic.AuthCheckingContext{Request: req, Config: cfg})
@@ -57,7 +58,7 @@ func TestCheckUserFromApiKey_InvalidKey(t *testing.T) {
 		ApiKey:   "secret-key-123",
 	})
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer wrong-key")
 
 	user := CheckUserFromApiKey(&authpublic.AuthCheckingContext{Request: req, Config: cfg})
@@ -70,7 +71,7 @@ func TestCheckUserFromApiKey_NoHeader(t *testing.T) {
 		ApiKey:   "secret-key-123",
 	})
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 
 	user := CheckUserFromApiKey(&authpublic.AuthCheckingContext{Request: req, Config: cfg})
 	assert.Nil(t, user)
@@ -82,7 +83,7 @@ func TestCheckUserFromApiKey_BasicPrefixIgnored(t *testing.T) {
 		ApiKey:   "secret-key-123",
 	})
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Basic secret-key-123")
 
 	user := CheckUserFromApiKey(&authpublic.AuthCheckingContext{Request: req, Config: cfg})
@@ -95,7 +96,7 @@ func TestCheckUserFromApiKey_EmptyApiKeyIgnored(t *testing.T) {
 		ApiKey:   "",
 	})
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer ")
 
 	user := CheckUserFromApiKey(&authpublic.AuthCheckingContext{Request: req, Config: cfg})
@@ -108,7 +109,7 @@ func TestCheckUserFromApiKey_MultipleUsers(t *testing.T) {
 		&authpublic.LocalUser{Username: "bob", Usergroup: "admins", ApiKey: "bob-key"},
 	)
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
 	req.Header.Set("Authorization", "Bearer bob-key")
 
 	user := CheckUserFromApiKey(&authpublic.AuthCheckingContext{Request: req, Config: cfg})

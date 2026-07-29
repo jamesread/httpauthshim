@@ -18,7 +18,7 @@ import (
 // OWASP Session Management Cheat Sheet defaults for low-risk applications:
 // idle 15–30 minutes, absolute 4–8 hours.
 const (
-	DefaultIdleTimeoutSeconds     = 30 * 60      // 30 minutes
+	DefaultIdleTimeoutSeconds     = 30 * 60     // 30 minutes
 	DefaultAbsoluteTimeoutSeconds = 8 * 60 * 60 // 8 hours
 )
 
@@ -35,36 +35,26 @@ type SessionProvider struct {
 }
 
 type SessionStorage struct {
-	Providers map[string]*SessionProvider
-	mu        sync.RWMutex // Protects Providers map
-	writeMu   sync.Mutex   // Serializes file writes to prevent race conditions
-
-	// Persistence backend for loading and saving sessions
-	persistence SessionPersistence // Pluggable persistence implementation
-
-	// Timeout configuration (OWASP idle + absolute)
-	idleTimeoutSeconds     int64
+	lastWriteError         error
+	persistence            SessionPersistence
+	retryTimer             *time.Timer
+	cleanupTicker          *time.Ticker
+	Providers              map[string]*SessionProvider
+	shutdownChan           chan struct{}
+	writeTimer             *time.Timer
+	lastWriteDir           string
+	lastWriteFile          string
 	absoluteTimeoutSeconds int64
-
-	// Async write management
-	pendingWrite  atomic.Bool // Indicates if a write is pending
-	writeTimer    *time.Timer // Timer for debounced writes
-	writeTimerMu  sync.Mutex  // Protects writeTimer
-	lastWriteDir  string      // Last write directory (for debounced writes)
-	lastWriteFile string      // Last write filename (for debounced writes)
-	shutdownChan  chan struct{}
-	cleanupTicker *time.Ticker
-	cleanupOnce   sync.Once
-
-	// Error handling for async writes
-	lastWriteError   error
-	lastWriteErrorMu sync.RWMutex
-
-	// Retry mechanism for failed writes
-	retryTimer   *time.Timer
-	retryTimerMu sync.Mutex
-	retryCount   int
-	maxRetries   int
+	idleTimeoutSeconds     int64
+	retryCount             int
+	maxRetries             int
+	lastWriteErrorMu       sync.RWMutex
+	mu                     sync.RWMutex
+	cleanupOnce            sync.Once
+	writeTimerMu           sync.Mutex
+	writeMu                sync.Mutex
+	retryTimerMu           sync.Mutex
+	pendingWrite           atomic.Bool
 }
 
 var (
@@ -126,29 +116,30 @@ func (s *SessionStorage) AbsoluteTimeoutSeconds() int {
 // Shutdown stops background goroutines and performs final write
 func (s *SessionStorage) Shutdown(dir, filename string) error {
 	close(s.shutdownChan)
-	
+
 	s.writeTimerMu.Lock()
 	if s.writeTimer != nil {
 		s.writeTimer.Stop()
 	}
 	s.writeTimerMu.Unlock()
-	
+
 	s.retryTimerMu.Lock()
 	if s.retryTimer != nil {
 		s.retryTimer.Stop()
 	}
 	s.retryTimerMu.Unlock()
-	
+
 	if s.cleanupTicker != nil {
 		s.cleanupTicker.Stop()
 	}
-	
+
 	// Perform final synchronous write
 	return s.saveSync(dir, filename)
 }
 
-// RegisterUserSession registers a user session (uses global storage for backward compatibility)
-// DEPRECATED: Use SessionStorage.RegisterSession() instead for instance-based storage.
+// RegisterUserSession registers a user session (uses global storage for backward compatibility).
+//
+// Deprecated: Use SessionStorage.RegisterSession() instead for instance-based storage.
 func RegisterUserSession(cfg interface {
 	GetDir() string
 	GetSessionFileName() string
@@ -196,8 +187,9 @@ func (s *SessionStorage) RegisterSession(dir, filename string, provider string, 
 	s.saveAsync(dir, filename)
 }
 
-// GetUserSession retrieves a user session (uses global storage for backward compatibility)
-// DEPRECATED: Use SessionStorage.GetSession() instead for instance-based storage.
+// GetUserSession retrieves a user session (uses global storage for backward compatibility).
+//
+// Deprecated: Use SessionStorage.GetSession() instead for instance-based storage.
 func GetUserSession(provider string, sid string) *UserSession {
 	return sessionStorage.GetSession(provider, sid)
 }
@@ -238,8 +230,9 @@ func (s *SessionStorage) touchPersistLocked() {
 	s.saveAsync(s.lastWriteDir, s.lastWriteFile)
 }
 
-// DeleteUserSession deletes a user session (uses global storage for backward compatibility)
-// DEPRECATED: Use SessionStorage.DeleteSession() instead for instance-based storage.
+// DeleteUserSession deletes a user session (uses global storage for backward compatibility).
+//
+// Deprecated: Use SessionStorage.DeleteSession() instead for instance-based storage.
 func DeleteUserSession(cfg interface {
 	GetDir() string
 	GetSessionFileName() string
@@ -263,9 +256,13 @@ func (s *SessionStorage) DeleteSession(dir, filename string, provider string, si
 	}
 }
 
-// LoadUserSessions loads sessions from disk (uses global storage for backward compatibility)
-// DEPRECATED: Use SessionStorage.Load() instead for instance-based storage.
-func LoadUserSessions(cfg interface{ GetDir() string; GetSessionFileName() string }) {
+// LoadUserSessions loads sessions from disk (uses global storage for backward compatibility).
+//
+// Deprecated: Use SessionStorage.Load() instead for instance-based storage.
+func LoadUserSessions(cfg interface {
+	GetDir() string
+	GetSessionFileName() string
+}) {
 	sessionStorageMutex.Lock()
 	defer sessionStorageMutex.Unlock()
 
@@ -394,7 +391,7 @@ func (s *SessionStorage) validateSessionData() error {
 
 	now := time.Now().Unix()
 	maxFutureExpiry := now + (10 * 365 * 24 * 60 * 60) // 10 years in the future
-	maxPastExpiry := now - (1 * 365 * 24 * 60 * 60)   // 1 year in the past
+	maxPastExpiry := now - (1 * 365 * 24 * 60 * 60)    // 1 year in the past
 
 	invalidSessions := 0
 	for providerName, provider := range s.Providers {
@@ -448,10 +445,10 @@ var (
 	// fileWriteMutexes provides per-file mutexes to coordinate writes across multiple contexts
 	// Keyed by file path (dir + filename)
 	fileWriteMutexes    = make(map[string]*sync.Mutex)
-	fileWriteMutexesMu  sync.Mutex // Protects fileWriteMutexes map
+	fileWriteMutexesMu  sync.Mutex                   // Protects fileWriteMutexes map
 	fileMutexLastAccess = make(map[string]time.Time) // Track last access time for cleanup
 	maxFileMutexes      = 100                        // Maximum number of mutexes before cleanup
-	fileMutexCleanupAge = 1 * time.Hour               // Remove mutexes not accessed in this time
+	fileMutexCleanupAge = 1 * time.Hour              // Remove mutexes not accessed in this time
 )
 
 // cleanupUnusedFileMutexes removes mutexes that haven't been accessed recently.
@@ -459,7 +456,7 @@ var (
 func cleanupUnusedFileMutexes() {
 	now := time.Now()
 	cutoff := now.Add(-fileMutexCleanupAge)
-	
+
 	// Only clean up if we're significantly over the limit to avoid race conditions
 	// We check lastAccess time, but a mutex could still be in use if a write is in progress.
 	// By only cleaning up when we're well over the limit, we reduce the chance of
@@ -467,7 +464,7 @@ func cleanupUnusedFileMutexes() {
 	if len(fileWriteMutexes) <= maxFileMutexes {
 		return // Not over limit, no cleanup needed
 	}
-	
+
 	// Clean up mutexes that haven't been accessed in a while
 	// Note: We can't check if a mutex is currently locked, so we rely on lastAccess time
 	// and only clean up when we're significantly over the limit
@@ -476,7 +473,7 @@ func cleanupUnusedFileMutexes() {
 			delete(fileWriteMutexes, path)
 			delete(fileMutexLastAccess, path)
 			logrus.WithFields(logrus.Fields{
-				"path":      path,
+				"path":       path,
 				"lastAccess": lastAccess,
 			}).Debug("Cleaned up unused file write mutex")
 		}
@@ -490,7 +487,7 @@ func isProcessRunning(pid int) bool {
 	if err != nil {
 		return false
 	}
-	
+
 	// Signal 0 doesn't actually send a signal, but checks if the process exists
 	// On Unix systems, this returns an error if the process doesn't exist
 	err = process.Signal(syscall.Signal(0))
@@ -681,22 +678,22 @@ func acquireFileLock(dir, filename string) (*os.File, func(), error) {
 // getFileWriteMutex returns a mutex for a specific file path, creating it if needed
 func getFileWriteMutex(dir, filename string) *sync.Mutex {
 	filePath := filepath.Join(dir, filename)
-	
+
 	fileWriteMutexesMu.Lock()
 	defer fileWriteMutexesMu.Unlock()
-	
+
 	// Update last access time
 	fileMutexLastAccess[filePath] = time.Now()
-	
+
 	// Cleanup if map is getting too large (caller already holds the lock)
 	if len(fileWriteMutexes) >= maxFileMutexes {
 		cleanupUnusedFileMutexes() // Assumes lock is already held
 	}
-	
+
 	if mu, exists := fileWriteMutexes[filePath]; exists {
 		return mu
 	}
-	
+
 	mu := &sync.Mutex{}
 	fileWriteMutexes[filePath] = mu
 	return mu
@@ -706,15 +703,15 @@ func getFileWriteMutex(dir, filename string) *sync.Mutex {
 func (s *SessionStorage) saveAsync(dir, filename string) {
 	s.writeTimerMu.Lock()
 	defer s.writeTimerMu.Unlock()
-	
+
 	s.lastWriteDir = dir
 	s.lastWriteFile = filename
-	
+
 	// Cancel existing timer if any
 	if s.writeTimer != nil {
 		s.writeTimer.Stop()
 	}
-	
+
 	// Schedule write after 500ms of inactivity
 	// Use stored dir/filename to ensure we write to the most recent path even if
 	// saveAsync is called multiple times before the timer fires
@@ -723,20 +720,20 @@ func (s *SessionStorage) saveAsync(dir, filename string) {
 		writeDir := s.lastWriteDir
 		writeFile := s.lastWriteFile
 		s.writeTimerMu.Unlock()
-		
+
 		if err := s.saveSync(writeDir, writeFile); err != nil {
 			logrus.WithError(err).Error("Failed to save sessions asynchronously")
 			s.lastWriteErrorMu.Lock()
 			s.lastWriteError = err
 			s.lastWriteErrorMu.Unlock()
-			
+
 			// Schedule retry if we haven't exceeded max retries
 			s.scheduleRetry(writeDir, writeFile)
 		} else {
 			s.lastWriteErrorMu.Lock()
 			s.lastWriteError = nil
 			s.lastWriteErrorMu.Unlock()
-			
+
 			// Reset retry count on success
 			s.retryTimerMu.Lock()
 			s.retryCount = 0
@@ -744,7 +741,7 @@ func (s *SessionStorage) saveAsync(dir, filename string) {
 		}
 		s.pendingWrite.Store(false)
 	})
-	
+
 	s.pendingWrite.Store(true)
 }
 
@@ -752,7 +749,7 @@ func (s *SessionStorage) saveAsync(dir, filename string) {
 func (s *SessionStorage) scheduleRetry(dir, filename string) {
 	s.retryTimerMu.Lock()
 	defer s.retryTimerMu.Unlock()
-	
+
 	// Check and increment retry count atomically within the lock
 	currentRetryCount := s.retryCount
 	if currentRetryCount >= s.maxRetries {
@@ -764,33 +761,33 @@ func (s *SessionStorage) scheduleRetry(dir, filename string) {
 		}).Error("Max retries exceeded for session write, giving up")
 		return
 	}
-	
+
 	// Increment retry count atomically
 	s.retryCount = currentRetryCount + 1
 	newRetryCount := s.retryCount
-	
+
 	// Exponential backoff: 1s, 2s, 4s
 	backoffDuration := time.Duration(1<<uint(newRetryCount-1)) * time.Second
-	
+
 	// Cancel existing retry timer if any
 	if s.retryTimer != nil {
 		s.retryTimer.Stop()
 	}
-	
+
 	logrus.WithFields(logrus.Fields{
 		"retryCount":     newRetryCount,
 		"backoffSeconds": backoffDuration.Seconds(),
 		"dir":            dir,
 		"filename":       filename,
 	}).Debug("Scheduling retry for failed session write")
-	
+
 	s.retryTimer = time.AfterFunc(backoffDuration, func() {
 		if err := s.saveSync(dir, filename); err != nil {
 			logrus.WithError(err).Error("Retry failed for session write")
 			s.lastWriteErrorMu.Lock()
 			s.lastWriteError = err
 			s.lastWriteErrorMu.Unlock()
-			
+
 			// Schedule another retry (will check max retries again)
 			s.scheduleRetry(dir, filename)
 		} else {
@@ -798,7 +795,7 @@ func (s *SessionStorage) scheduleRetry(dir, filename string) {
 			s.lastWriteErrorMu.Lock()
 			s.lastWriteError = nil
 			s.lastWriteErrorMu.Unlock()
-			
+
 			// Reset retry count on success (atomically)
 			s.retryTimerMu.Lock()
 			s.retryCount = 0
@@ -839,7 +836,7 @@ func (s *SessionStorage) saveSync(dir, filename string) error {
 		fileMu := getFileWriteMutex(dir, filename)
 		fileMu.Lock()
 		defer fileMu.Unlock()
-		
+
 		// Acquire file-level lock for cross-process coordination
 		_, cleanup, err := acquireFileLock(dir, filename)
 		if err != nil {
@@ -850,7 +847,6 @@ func (s *SessionStorage) saveSync(dir, filename string) error {
 
 	return s.persistence.Save(dir, filename, s)
 }
-
 
 // startCleanupGoroutine starts background goroutine to clean up expired sessions
 func (s *SessionStorage) startCleanupGoroutine() {

@@ -31,10 +31,10 @@ type AuthShimContext struct {
 	Config       *authpublic.Config
 	Sessions     *sessions.SessionStorage
 	chain        []func(*authpublic.AuthCheckingContext) *authpublic.AuthenticatedUser
-	chainMu      sync.RWMutex
 	enrichers    []EnrichUserFunc
+	chainMu      sync.RWMutex
 	enrichersMu  sync.RWMutex
-	shutdownOnce sync.Once // Ensures shutdown is only called once
+	shutdownOnce sync.Once
 }
 
 // NewAuthShimContext creates a new AuthShimContext with the provided config and session storage.
