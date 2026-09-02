@@ -280,6 +280,7 @@ accessControlLists:
 - `providers/haslocal` - Local password-based authentication and sessions
 - `providers/hasmtls` - Mutual TLS (mTLS) client certificate authentication
 - `providers/hastrustedheaders` - Trusted HTTP headers authentication
+- `providers/hascallback` - App-owned cookie SID and Bearer lookups (database sessions / API keys)
 
 ## Extending the Auth Chain
 
@@ -309,9 +310,18 @@ ctx.AddProvider(func(authCtx *authpublic.AuthCheckingContext) *authpublic.Authen
 
 ## Session Management
 
-Sessions are persisted to disk in YAML format. By default, sessions are stored in `~/.config/auth/sessions.yaml`, but this can be configured via the `BaseDir` field in the config or the `AUTH_HOME` environment variable.
+Sessions are persisted to disk in YAML format **when you use `NewYAMLPersistence()`**. By default those files live in `~/.config/auth/sessions.yaml` (`BaseDir` or `AUTH_HOME`).
 
-Default lifetimes follow the OWASP Session Management Cheat Sheet for low-risk apps: **30 minutes idle** and **8 hours absolute**. Both are configurable via `sessionIdleTimeoutSeconds` and `sessionAbsoluteTimeoutSeconds`.
+SOA apps that store sessions and API keys in their own database must **not** use YAML file sessions. Pass `sessions.NewNopPersistence()` into `NewSessionStorage`, then register `hascallback.BearerToken` and `hascallback.CookieSID` so the app looks up `{app}-sid` cookies and Bearer keys itself. `authpublic.ConfigFromMap` loads the YAML `auth:` block from koanf or similar.
+
+```go
+storage := sessions.NewSessionStorage(sessions.NewNopPersistence())
+ctx, err := auth.NewAuthShimContext(cfg, storage)
+ctx.AddProvider(hascallback.BearerToken(lookupAPIKey))
+ctx.AddProvider(hascallback.CookieSID("app-sid", lookupSession))
+```
+
+Default YAML session lifetimes follow the OWASP Session Management Cheat Sheet for low-risk apps: **30 minutes idle** and **8 hours absolute**. Both are configurable via `sessionIdleTimeoutSeconds` and `sessionAbsoluteTimeoutSeconds`.
 
 When using `AuthShimContext`, sessions are automatically loaded on creation and managed through the context:
 

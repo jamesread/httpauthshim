@@ -44,6 +44,35 @@ func TestCookieSecureDefaults(t *testing.T) {
 	assert.True(t, (*Config)(nil).CookieSecure(req))
 }
 
+func TestConfigFromMap_Nil(t *testing.T) {
+	cfg, err := ConfigFromMap(nil)
+	assert.NoError(t, err)
+	assert.NotNil(t, cfg)
+	assert.Equal(t, "", cfg.Jwt.Header)
+}
+
+func TestConfigFromMap_JWTAndHeaders(t *testing.T) {
+	cfg, err := ConfigFromMap(map[string]any{
+		"jwt": map[string]any{
+			"header":     "Authorization",
+			"hmacSecret": "s3cret",
+		},
+		"httpHeader": map[string]any{
+			"username": "X-Username",
+		},
+		"mtls": map[string]any{
+			"enabled":        true,
+			"usernameFromCN": true,
+		},
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, "Authorization", cfg.Jwt.Header)
+	assert.Equal(t, "s3cret", cfg.Jwt.HmacSecret)
+	assert.Equal(t, "X-Username", cfg.HttpHeader.Username)
+	assert.True(t, cfg.Mtls.Enabled)
+	assert.True(t, cfg.Mtls.UsernameFromCN)
+}
+
 func TestCookieSecureAllowInsecure(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), "GET", "http://example.com", nil)
 	cfg := &Config{OAuth2AllowInsecureCookies: true}
